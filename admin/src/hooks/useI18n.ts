@@ -1,0 +1,40 @@
+import { useI18nStore } from '@/store/i18n.store';
+import { vi } from '@/locales/vi';
+
+const dictionaries = { en: vi, vi };
+
+type Dictionary = typeof vi;
+
+// Helper to get nested value from the dictionary object
+const getNestedValue = (obj: any, path: string): string | undefined => {
+  return path.split('.').reduce((acc, part) => (acc && acc[part] !== undefined ? acc[part] : undefined), obj);
+};
+
+export const useI18n = () => {
+  const locale = useI18nStore((state) => state.locale);
+  const setLocale = useI18nStore((state) => state.setLocale);
+  const dictionary: Dictionary = dictionaries[locale] || dictionaries.vi;
+
+  const t = (key: string, params?: Record<string, string | number>): string => {
+    let text = getNestedValue(dictionary, key) || getNestedValue(dictionaries.vi, key);
+
+    if (text === undefined) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.warn(`[i18n] Missing translation key: ${key}`);
+      }
+      return key; // Fallback to key if entirely missing
+    }
+
+    if (params) {
+      Object.entries(params).forEach(([paramKey, paramValue]) => {
+        text = text
+          ?.replace(new RegExp(`{${paramKey}}`, 'g'), String(paramValue))
+          .replace(new RegExp(`{{${paramKey}}}`, 'g'), String(paramValue));
+      });
+    }
+
+    return text as string;
+  };
+
+  return { t, locale, setLocale };
+};
