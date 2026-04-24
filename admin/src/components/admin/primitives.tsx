@@ -1,8 +1,18 @@
 'use client';
 
-import type { ButtonHTMLAttributes, HTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes } from 'react';
+import {
+  Children,
+  isValidElement,
+  type ButtonHTMLAttributes,
+  type ChangeEvent,
+  type HTMLAttributes,
+  type InputHTMLAttributes,
+  type ReactNode,
+  type SelectHTMLAttributes,
+} from 'react';
 import { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom';
+import { SearchableSelect, type SearchableSelectOption } from '@/components/ui/SearchableSelect';
 
 export function cn(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(' ');
@@ -126,20 +136,135 @@ export function AdminInput({
 
 type AdminSelectProps = SelectHTMLAttributes<HTMLSelectElement> & {
   error?: boolean;
+  loading?: boolean;
+  title?: string;
+  description?: string;
+  emptyTitle?: string;
+  emptyDescription?: string;
+  searchable?: boolean;
+  clearable?: boolean;
 };
 
-export function AdminSelect({ className, error = false, children, ...props }: AdminSelectProps) {
+function flattenOptionText(node: ReactNode): string {
+  return Children.toArray(node)
+    .map((child) => {
+      if (typeof child === 'string' || typeof child === 'number') {
+        return String(child);
+      }
+      if (isValidElement(child)) {
+        return flattenOptionText(child.props.children);
+      }
+      return '';
+    })
+    .join('')
+    .trim();
+}
+
+function parseSelectOptions(children: ReactNode) {
+  const options: SearchableSelectOption[] = [];
+  let placeholderLabel: string | undefined;
+  let hasEmptyValueOption = false;
+
+  const visit = (node: ReactNode) => {
+    Children.forEach(node, (child) => {
+      if (!isValidElement(child)) return;
+
+      if (child.type === 'option') {
+        const optionValue = String(child.props.value ?? flattenOptionText(child.props.children));
+        const label = flattenOptionText(child.props.children);
+        if (optionValue === '') {
+          hasEmptyValueOption = true;
+          placeholderLabel = label || placeholderLabel;
+          return;
+        }
+
+        options.push({
+          id: optionValue,
+          label,
+          disabled: Boolean(child.props.disabled),
+        });
+        return;
+      }
+
+      if (child.props?.children) {
+        visit(child.props.children);
+      }
+    });
+  };
+
+  visit(children);
+
+  return {
+    options,
+    placeholderLabel,
+    hasEmptyValueOption,
+  };
+}
+
+export function AdminSelect({
+  className,
+  error = false,
+  children,
+  value,
+  defaultValue,
+  onChange,
+  disabled,
+  loading = false,
+  title,
+  description,
+  emptyTitle,
+  emptyDescription,
+  searchable,
+  clearable,
+  name,
+  ...props
+}: AdminSelectProps) {
+  const parsed = parseSelectOptions(children);
+  const isControlled = value !== undefined;
+  const [internalValue, setInternalValue] = useState(String(defaultValue ?? ''));
+
+  useEffect(() => {
+    if (!isControlled) {
+      setInternalValue(String(defaultValue ?? ''));
+    }
+  }, [defaultValue, isControlled]);
+
+  const resolvedValue = isControlled ? String(value ?? '') : internalValue;
+
+  const emitChange = (nextValue: string) => {
+    if (!isControlled) {
+      setInternalValue(nextValue);
+    }
+
+    if (!onChange) return;
+
+    const syntheticEvent = {
+      target: { value: nextValue, name } as EventTarget & HTMLSelectElement,
+      currentTarget: { value: nextValue, name } as EventTarget & HTMLSelectElement,
+    } as ChangeEvent<HTMLSelectElement>;
+
+    onChange(syntheticEvent);
+  };
+
   return (
-    <select
-      className={cn(
-        'field w-full appearance-none pr-10',
-        error && 'border-[rgb(var(--danger))/40] ring-2 ring-[rgb(var(--danger))/12]',
-        className,
-      )}
-      {...props}
-    >
-      {children}
-    </select>
+    <SearchableSelect
+      options={parsed.options}
+      value={resolvedValue}
+      onChange={emitChange}
+      placeholder={parsed.placeholderLabel}
+      disabled={disabled}
+      loading={loading}
+      title={title}
+      description={description}
+      emptyTitle={emptyTitle}
+      emptyDescription={emptyDescription}
+      clearable={clearable ?? parsed.hasEmptyValueOption}
+      searchable={searchable ?? true}
+      className={className}
+      invalid={error}
+      name={name}
+      menuId={props.id ? `${props.id}-menu` : undefined}
+    />
   );
 }
 

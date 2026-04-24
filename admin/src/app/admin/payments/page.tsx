@@ -8,6 +8,7 @@ import { useI18n } from '@/hooks/useI18n';
 import {
   ControlSurface,
   DataTable,
+  FeedbackPopup,
   InlineAlert,
   KeyValueList,
   PageHeader,
@@ -388,6 +389,15 @@ export default function PaymentsPage() {
 
   return (
     <>
+      <FeedbackPopup
+        error={error}
+        feedback={feedback}
+        onClose={() => {
+          setError(null);
+          setFeedback(null);
+        }}
+      />
+
       <PageHeader
         eyebrow={t('paymentOps.eyebrow')}
         title={t('paymentOps.title')}

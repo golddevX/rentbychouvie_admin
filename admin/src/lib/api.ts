@@ -5,6 +5,9 @@ export const authApi = {
   login: (email: string, password: string) =>
     adminApiClient.post('/auth/login', { email, password }),
 
+  refresh: (refreshToken: string) =>
+    adminApiClient.post('/auth/refresh', { refreshToken }),
+
   logout: () =>
     adminApiClient.post('/auth/logout'),
 };
@@ -23,6 +26,9 @@ export const leadsApi = {
   update: (id: string, data: any) =>
     adminApiClient.patch(`/leads/${id}`, data),
 
+  selectProduct: (id: string, data: any) =>
+    adminApiClient.post(`/leads/${id}/select-product`, data),
+
   updateStatus: (id: string, status: string) =>
     adminApiClient.patch(`/leads/${id}/status`, { status }),
 
@@ -32,14 +38,20 @@ export const leadsApi = {
   requestDeposit: (id: string, data?: any) =>
     adminApiClient.post(`/leads/${id}/request-deposit`, data ?? {}),
 
+  receiveDeposit: (id: string, data: { amount: number; paymentMethod?: string; description?: string }) =>
+    adminApiClient.post(`/leads/${id}/receive-deposit`, data),
+
+  createAppointment: (id: string) =>
+    adminApiClient.post(`/leads/${id}/create-appointment`),
+
   archive: (id: string) =>
     adminApiClient.patch(`/leads/${id}/archive`),
 
   assignTo: (id: string, userId: string) =>
     adminApiClient.patch(`/leads/${id}/assign`, { userId }),
 
-  convertToBooking: (id: string, bookingId: string) =>
-    adminApiClient.post(`/leads/${id}/convert-to-booking`, { bookingId }),
+  convertToBooking: (id: string, bookingId?: string) =>
+    adminApiClient.post(`/leads/${id}/convert-to-booking`, bookingId ? { bookingId } : {}),
 };
 
 // Bookings API
@@ -267,6 +279,7 @@ export const appointmentsApi = {
     room?: string;
     resourceItemId?: string;
   }) => adminApiClient.get('/appointments/availability/query', { params }),
+  complete: (id: string) => adminApiClient.post(`/appointments/${id}/complete`),
   updateStatus: (id: string, status: string) =>
     adminApiClient.patch(`/appointments/${id}/status`, { status }),
   archive: (id: string) => adminApiClient.patch(`/appointments/${id}/archive`),

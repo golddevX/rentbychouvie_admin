@@ -40,6 +40,18 @@ function normalizeStatus(value?: string) {
   return String(value ?? 'new').toLowerCase();
 }
 
+function leadNextStepKey(status: string) {
+  if (status === 'new') return 'leadOps.next.call';
+  if (status === 'contacted') return 'leadOps.next.selectProduct';
+  if (status === 'product_selected') return 'leadOps.next.requestDeposit';
+  if (status === 'deposit_requested') return 'leadOps.next.receiveDeposit';
+  if (status === 'deposit_received') return 'leadOps.next.reviewAppointment';
+  if (status === 'appointment_created') return 'leadOps.next.completeAppointment';
+  if (status === 'appointment_completed') return 'leadOps.next.convertBooking';
+  if (status === 'booking_created') return 'leadOps.next.done';
+  return 'leadOps.next.recover';
+}
+
 function deadlineText(value?: string, fallbackMs = 0, overdueLabel = 'quá hạn') {
   const target = value ? new Date(value).getTime() : Date.now() + fallbackMs;
   const diff = target - Date.now();
@@ -181,7 +193,7 @@ export function LeadOperationsWorkbench() {
               <AdminButton className="w-full" onClick={() => updateLead('contacted')} loading={actionBusy}>{t('leadOps.timeline.callLogged')}</AdminButton>
               <AdminButton variant="secondary" className="w-full" onClick={() => updateLead('deposit_requested')} loading={actionBusy}>{t('leadOps.actions.requestDeposit')}</AdminButton>
               <Link className="button-secondary w-full text-center" href="/admin/appointments">{t('lead.createAppointment')}</Link>
-              <Link className="button-primary w-full text-center" href={`/admin/bookings/new?lead=${active.id}`}>{t('booking.createBooking')}</Link>
+                    <Link className="button-primary w-full text-center" href={`/admin/leads/${active.id}`}>{t('leadOps.actions.openFlow')}</Link>
             </RailSection>
             <RailSection title={t('leadOps.deposit.hold')}>
               <div className="rounded-xl border border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-3))] p-4 text-sm">
@@ -207,7 +219,7 @@ export function LeadOperationsWorkbench() {
                 deadlineText(lead.contactDeadlineAt, 60 * 60000, t('leadOps.overdue')),
                 lead.depositDeadlineAt ? deadlineText(lead.depositDeadlineAt, 0, t('leadOps.overdue')) : t('leadOps.actions.requestDeposit'),
                 <StatusBadge key={`status-${lead.id}`} value={lead.status} />,
-                lead.status === 'new' ? t('leadOps.next.call') : lead.status === 'deposit_requested' ? t('leadOps.next.verify') : t('leadOps.next.booking'),
+                t(leadNextStepKey(lead.status)),
               ])}
             />
           )}

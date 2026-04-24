@@ -7,6 +7,7 @@ import { bookings as demoBookings, currency, type Tone } from '@/lib/admin/demo-
 import { useI18n } from '@/hooks/useI18n';
 import {
   DataTable,
+  FeedbackPopup,
   InlineAlert,
   KeyValueList,
   PageHeader,
@@ -297,6 +298,13 @@ export default function PickupDeskPage() {
 
   return (
     <>
+      <FeedbackPopup
+        feedback={feedback}
+        onClose={() => {
+          setFeedback(null);
+        }}
+      />
+
       <PageHeader
         eyebrow={t('pickupOps.eyebrow')}
         title={t('pickupOps.title')}

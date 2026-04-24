@@ -1,13 +1,16 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { appointmentsApi, leadsApi, usersApi } from '@/lib/api';
+import { useEffect, useMemo, useState } from 'react';
+import { leadsApi, usersApi } from '@/lib/api';
+import { can } from '@/lib/admin/permissions';
 import { leads as demoLeads, staff as demoStaff, currency, type Tone } from '@/lib/admin/demo-data';
 import { useI18n } from '@/hooks/useI18n';
+import { useAuthStore } from '@/store/auth.store';
 import {
   ControlSurface,
   DataTable,
+  FeedbackPopup,
   InlineAlert,
   KeyValueList,
   PageHeader,
@@ -21,7 +24,25 @@ import {
 } from './ui';
 import { AdminBadge, AdminButton, AdminInput, AdminModal, AdminSelect, AdminSpinner, cn } from './primitives';
 
-type LeadStatus = 'new' | 'contacted' | 'deposit_requested' | 'deposit_received' | 'booking_created' | 'lost';
+type LeadStatus =
+  | 'new'
+  | 'contacted'
+  | 'product_selected'
+  | 'deposit_requested'
+  | 'deposit_received'
+  | 'appointment_created'
+  | 'appointment_completed'
+  | 'booking_created'
+  | 'deposit_expired'
+  | 'lost'
+  | 'cancelled';
+
+type StaffOption = {
+  id: string;
+  fullName: string;
+  email?: string;
+  role?: string;
+};
 
 type LeadRow = {
   id: string;
@@ -34,33 +55,44 @@ type LeadRow = {
   owner: string;
   ownerId?: string;
   notes: string;
-  interestedProduct: string;
-  preferredRentalDate: string;
   quotedPrice: number;
+  productId?: string;
+  productName?: string;
+  variantName?: string;
+  inventoryItemLabel?: string;
+  pickupDate?: string;
+  returnDate?: string;
+  appointmentId?: string;
+  appointmentStatus?: string;
+  appointmentTime?: string;
+  bookingId?: string;
+  bookingStatus?: string;
   contactDeadlineAt?: string;
   contactedAt?: string;
   depositRequestedAt?: string;
   depositDeadlineAt?: string;
   depositReceivedAt?: string;
-  convertedToBookingId?: string;
   createdAt?: string;
   updatedAt?: string;
 };
 
-type StaffOption = {
-  id: string;
-  fullName: string;
-  email?: string;
-  role?: string;
-};
+type ConfirmAction =
+  | { kind: 'archive'; lead: LeadRow }
+  | { kind: 'cancel'; lead: LeadRow }
+  | null;
 
 const STATUS_OPTIONS: Array<{ value: 'all' | LeadStatus; labelKey: string }> = [
   { value: 'all', labelKey: 'leadOps.filters.allStatuses' },
   { value: 'new', labelKey: 'lead.status.new' },
   { value: 'contacted', labelKey: 'lead.status.contacted' },
+  { value: 'product_selected', labelKey: 'lead.status.product_selected' },
   { value: 'deposit_requested', labelKey: 'lead.status.deposit_requested' },
   { value: 'deposit_received', labelKey: 'lead.status.deposit_received' },
+  { value: 'appointment_created', labelKey: 'lead.status.appointment_created' },
+  { value: 'appointment_completed', labelKey: 'lead.status.appointment_completed' },
   { value: 'booking_created', labelKey: 'lead.status.booking_created' },
+  { value: 'deposit_expired', labelKey: 'lead.status.deposit_expired' },
+  { value: 'cancelled', labelKey: 'lead.status.cancelled' },
   { value: 'lost', labelKey: 'lead.status.lost' },
 ];
 
@@ -71,28 +103,19 @@ function normalizeStatus(value?: string): LeadStatus {
   if (
     normalized === 'new' ||
     normalized === 'contacted' ||
+    normalized === 'product_selected' ||
     normalized === 'deposit_requested' ||
     normalized === 'deposit_received' ||
+    normalized === 'appointment_created' ||
+    normalized === 'appointment_completed' ||
     normalized === 'booking_created' ||
+    normalized === 'deposit_expired' ||
+    normalized === 'cancelled' ||
     normalized === 'lost'
   ) {
     return normalized;
   }
   return 'new';
-}
-
-function parseRentalDates(value?: string | null) {
-  if (!value) return '';
-  try {
-    const parsed = JSON.parse(value);
-    const start = parsed.startDate ? new Date(parsed.startDate) : null;
-    const end = parsed.endDate ? new Date(parsed.endDate) : null;
-    if (start && end) return `${start.toLocaleDateString()} - ${end.toLocaleDateString()}`;
-    if (start) return start.toLocaleDateString();
-  } catch {
-    return value;
-  }
-  return value;
 }
 
 function contactDeadline(row: any) {
@@ -101,32 +124,90 @@ function contactDeadline(row: any) {
   return new Date(new Date(row.createdAt).getTime() + 60 * 60 * 1000).toISOString();
 }
 
-function leadFromApi(row: any): LeadRow {
-  const demo = row.requestedLook ? row : undefined;
-  const notes = row.notes ?? demo?.notes ?? '';
+function leadFromApi(
+  row: any,
+  labels: {
+    unknownCustomer: string;
+    unassigned: string;
+  },
+): LeadRow {
   return {
     id: row.id,
     customerId: row.customer?.id ?? row.customerId,
-    customer: row.customer?.name ?? row.customer ?? row.title ?? 'Unknown customer',
+    customer: row.customer?.name ?? row.customer ?? row.title ?? labels.unknownCustomer,
     email: row.customer?.email ?? row.email ?? '-',
     phone: row.customer?.phone ?? row.phone ?? '-',
     source: row.source ?? 'web',
     status: normalizeStatus(row.status),
-    owner: row.assignedTo?.fullName ?? row.staff ?? 'Unassigned',
+    owner: row.assignedTo?.fullName ?? row.staff ?? labels.unassigned,
     ownerId: row.assignedTo?.id ?? row.assignedToId,
-    notes,
-    interestedProduct: (row.interestedProduct ?? row.productName ?? row.requestedLook ?? notes) || 'Rental outfit consultation',
-    preferredRentalDate: parseRentalDates(row.rentalDates) || row.date || 'Not confirmed',
+    notes: row.notes ?? '',
     quotedPrice: Number(row.quotedPrice ?? row.budget ?? 0),
+    productId: row.product?.id ?? row.productId ?? undefined,
+    productName: row.product?.name ?? row.productName ?? undefined,
+    variantName: row.variant?.name ?? undefined,
+    inventoryItemLabel: row.inventoryItem?.serialNumber ?? undefined,
+    pickupDate: row.pickupDate ?? undefined,
+    returnDate: row.returnDate ?? undefined,
+    appointmentId: row.appointment?.id ?? row.appointmentId ?? undefined,
+    appointmentStatus: row.appointment?.status ?? undefined,
+    appointmentTime: row.appointment?.scheduledAt ?? row.appointment?.startTime ?? undefined,
+    bookingId: row.booking?.id ?? row.bookingId ?? row.convertedToBookingId ?? undefined,
+    bookingStatus: row.booking?.status ?? undefined,
     contactDeadlineAt: contactDeadline(row),
     contactedAt: row.contactedAt,
     depositRequestedAt: row.depositRequestedAt,
     depositDeadlineAt: row.depositDeadlineAt,
     depositReceivedAt: row.depositReceivedAt,
-    convertedToBookingId: row.convertedToBookingId,
-    createdAt: row.createdAt ?? row.date,
+    createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
+}
+
+function lower(value?: string | null) {
+  return String(value ?? '').toLowerCase();
+}
+
+function hasProductSelection(lead: LeadRow) {
+  return Boolean(lead.productId || lead.productName);
+}
+
+function hasRentalRequestContext(lead: LeadRow) {
+  return Boolean(hasProductSelection(lead) && lead.pickupDate && lead.returnDate);
+}
+
+function isManualLead(lead: LeadRow) {
+  return !hasProductSelection(lead);
+}
+
+function hasRequestedDeposit(lead: LeadRow) {
+  return ['deposit_requested', 'deposit_received', 'appointment_created', 'appointment_completed', 'booking_created'].includes(lead.status);
+}
+
+function hasReceivedDeposit(lead: LeadRow) {
+  return ['deposit_received', 'appointment_created', 'appointment_completed', 'booking_created'].includes(lead.status);
+}
+
+function hasBooking(lead: LeadRow) {
+  return Boolean(lead.bookingId || lead.status === 'booking_created');
+}
+
+function hasAppointment(lead: LeadRow) {
+  return Boolean(lead.appointmentId);
+}
+
+function formatDate(value?: string) {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString('vi-VN');
+}
+
+function formatDateTime(value?: string) {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString('vi-VN');
 }
 
 function minutesUntil(value?: string) {
@@ -134,81 +215,99 @@ function minutesUntil(value?: string) {
   return Math.ceil((new Date(value).getTime() - Date.now()) / 60000);
 }
 
-function timeLabel(value?: string, fallback = 'Not set') {
+function relativeWindow(value: string | undefined, labels: { fallback: string; overdue: string; left: string }) {
   const minutes = minutesUntil(value);
-  if (minutes === null) return fallback;
+  if (minutes === null) return labels.fallback;
   const overdue = minutes < 0;
   const absolute = Math.abs(minutes);
   const hours = Math.floor(absolute / 60);
   const mins = absolute % 60;
   const text = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
-  return overdue ? `${text} overdue` : `${text} left`;
+  return overdue ? `${text} ${labels.overdue}` : `${text} ${labels.left}`;
 }
 
 function urgencyTone(lead: LeadRow): Tone {
-  if (lead.status === 'lost') return 'danger';
-  if (lead.status === 'booking_created' || lead.status === 'deposit_received') return 'success';
-  const contact = minutesUntil(lead.contactDeadlineAt);
-  const deposit = minutesUntil(lead.depositDeadlineAt);
-  if ((lead.status === 'new' && contact !== null && contact <= 0) || (lead.status === 'deposit_requested' && deposit !== null && deposit <= 0)) {
-    return 'danger';
-  }
-  if ((lead.status === 'new' && contact !== null && contact <= 20) || lead.status === 'deposit_requested') return 'warning';
-  if (lead.status === 'contacted') return 'info';
+  if (lead.status === 'lost' || lead.status === 'cancelled') return 'danger';
+  if (lead.status === 'booking_created') return 'success';
+  if (lead.status === 'appointment_completed') return 'success';
+  if (lead.status === 'deposit_received' || lead.status === 'appointment_created') return 'info';
+  if (lead.status === 'deposit_expired') return 'danger';
+  if (lead.status === 'deposit_requested' || lead.status === 'product_selected') return 'warning';
   return 'neutral';
 }
 
 function urgencyScore(lead: LeadRow) {
-  const contact = minutesUntil(lead.contactDeadlineAt) ?? 9999;
   const deposit = minutesUntil(lead.depositDeadlineAt) ?? 9999;
-  if (lead.status === 'new') return contact;
-  if (lead.status === 'deposit_requested') return deposit + 1000;
-  if (lead.status === 'contacted') return 3000;
-  if (lead.status === 'deposit_received') return 4000;
-  if (lead.status === 'booking_created') return 5000;
-  return 9000;
+  const contact = minutesUntil(lead.contactDeadlineAt) ?? 9999;
+  if (!hasProductSelection(lead)) return 100 + contact;
+  if (lead.status === 'deposit_requested') return 200 + deposit;
+  if (lead.status === 'deposit_received' && !lead.appointmentId) return 300;
+  if (lead.status === 'appointment_created') return 400;
+  if (lead.status === 'appointment_completed') return 500;
+  if (lead.status === 'booking_created') return 900;
+  return 600 + contact;
 }
 
-function depositPercent(lead: LeadRow) {
-  if (lead.status === 'deposit_received' || lead.status === 'booking_created') return 100;
-  if (lead.status !== 'deposit_requested') return 0;
-  const start = lead.depositRequestedAt ? new Date(lead.depositRequestedAt).getTime() : Date.now();
-  const end = lead.depositDeadlineAt ? new Date(lead.depositDeadlineAt).getTime() : start + 5 * 60 * 60 * 1000;
-  const elapsed = Date.now() - start;
-  const total = Math.max(end - start, 1);
-  return Math.min(95, Math.max(12, Math.round((elapsed / total) * 100)));
+function nextStepKey(lead: LeadRow) {
+  if (hasBooking(lead)) return 'lead.next_step.open_booking';
+  if (!hasProductSelection(lead)) return 'lead.next_step.select_product';
+  if (lead.status === 'product_selected' || lead.status === 'contacted' || lead.status === 'deposit_expired') return 'lead.next_step.request_deposit';
+  if (lead.status === 'deposit_requested') return 'lead.next_step.waiting_deposit';
+  if (lead.status === 'deposit_received' && !lead.appointmentId) return 'lead.next_step.open_appointment';
+  if (lead.status === 'deposit_received' || lead.status === 'appointment_created') return 'lead.next_step.waiting_appointment_completed';
+  if (lead.status === 'appointment_completed') return 'lead.next_step.open_booking';
+  return 'lead.next_step.call_customer';
 }
 
-function nextStep(lead: LeadRow) {
-  if (lead.status === 'new') return 'leadOps.next.call';
-  if (lead.status === 'contacted') return 'leadOps.next.deposit';
-  if (lead.status === 'deposit_requested') return 'leadOps.next.verify';
-  if (lead.status === 'deposit_received') return 'leadOps.next.booking';
-  if (lead.status === 'booking_created') return 'leadOps.next.done';
-  return 'leadOps.next.recover';
-}
-
-function formatDateTime(value?: string) {
-  if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
-}
-
-function zaloUrl(phone: string) {
-  const digits = phone.replace(/[^\d]/g, '');
-  return digits ? `https://zalo.me/${digits}` : 'https://zalo.me';
-}
-
-function defaultAppointmentStart() {
-  const date = new Date(Date.now() + 2 * 60 * 60 * 1000);
-  date.setMinutes(0, 0, 0);
-  return date;
+function buildActionSummary(lead: LeadRow, t: (key: string, params?: Record<string, string | number>) => string) {
+  if (hasBooking(lead)) {
+    return {
+      label: t('lead.actions.open_booking'),
+      href: lead.bookingId ? `/admin/bookings/${lead.bookingId}` : '/admin/bookings',
+    };
+  }
+  if (!hasProductSelection(lead)) {
+    return {
+      label: t('lead.actions.select_product'),
+      href: `/admin/leads/${lead.id}`,
+    };
+  }
+  if (lead.status === 'product_selected' || lead.status === 'contacted' || lead.status === 'deposit_expired') {
+    return {
+      label: t('lead.actions.request_deposit'),
+      action: 'request-deposit' as const,
+    };
+  }
+  if (lead.status === 'deposit_requested') {
+    return {
+      label: t('lead.actions.confirm_deposit'),
+      href: `/admin/leads/${lead.id}`,
+    };
+  }
+  if (lead.status === 'deposit_received' || lead.status === 'appointment_created') {
+    return {
+      label: t('lead.actions.open_appointment'),
+      href: `/admin/leads/${lead.id}`,
+    };
+  }
+  return {
+    label: t('lead.actions.open_detail'),
+    href: `/admin/leads/${lead.id}`,
+  };
 }
 
 export function LeadManagementScreen() {
   const { t } = useI18n();
-  const [rows, setRows] = useState<LeadRow[]>(demoLeads.map(leadFromApi));
+  const userRole = useAuthStore((state) => state.user?.role);
+  const canManageUsers = can(userRole, 'manage_users');
+  const [rows, setRows] = useState<LeadRow[]>(() =>
+    demoLeads.map((row) =>
+      leadFromApi(row, {
+        unknownCustomer: t('leadOps.fallback.unknownCustomer'),
+        unassigned: t('lead.unassigned'),
+      }),
+    ),
+  );
   const [staffRows, setStaffRows] = useState<StaffOption[]>(demoStaff.map((item) => ({ id: item.id, fullName: item.name, email: item.email, role: item.role })));
   const [activeId, setActiveId] = useState(demoLeads[0]?.id ?? '');
   const [loading, setLoading] = useState(true);
@@ -220,34 +319,49 @@ export function LeadManagementScreen() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [assignOpen, setAssignOpen] = useState(false);
-  const [appointmentOpen, setAppointmentOpen] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
   const [feedback, setFeedback] = useState<{ tone: Tone; message: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [createDraft, setCreateDraft] = useState({ name: '', email: '', phone: '', source: 'web', notes: '' });
   const [editDraft, setEditDraft] = useState({ notes: '', quotedPrice: '' });
   const [assignDraft, setAssignDraft] = useState('');
-  const appointmentStart = useMemo(() => defaultAppointmentStart(), []);
-  const [appointmentDraft, setAppointmentDraft] = useState({
-    startTime: appointmentStart.toISOString().slice(0, 16),
-    room: 'Consultation A',
-    notes: '',
-  });
 
-  const active = useMemo(() => rows.find((row) => row.id === activeId) ?? rows[0], [rows, activeId]);
+  const active = rows.find((row) => row.id === activeId) ?? rows[0];
 
   const load = async () => {
     setLoading(true);
     setError(null);
     try {
-      const [leadResponse, userResponse] = await Promise.allSettled([leadsApi.getAll(), usersApi.getAll()]);
-      const leadRows = leadResponse.status === 'fulfilled' ? (leadResponse.value.data ?? []).map(leadFromApi) : [];
-      const userRows = userResponse.status === 'fulfilled'
+      const requests: Array<Promise<any>> = [leadsApi.getAll()];
+      if (canManageUsers) {
+        requests.push(usersApi.getAll());
+      }
+      const results = await Promise.allSettled(requests);
+      const [leadResponse, userResponse] = results;
+      const leadRows = leadResponse.status === 'fulfilled'
+        ? (leadResponse.value.data ?? []).map((row: any) =>
+            leadFromApi(row, {
+              unknownCustomer: t('leadOps.fallback.unknownCustomer'),
+              unassigned: t('lead.unassigned'),
+            }),
+          )
+        : [];
+      const userRows = canManageUsers && userResponse?.status === 'fulfilled'
         ? (userResponse.value.data ?? []).map((user: any) => ({ id: user.id, fullName: user.fullName, email: user.email, role: user.role }))
         : [];
-      const nextRows = leadRows.length ? leadRows : demoLeads.map(leadFromApi);
+
+      const nextRows: LeadRow[] = leadRows.length
+        ? leadRows
+        : demoLeads.map((row) =>
+            leadFromApi(row, {
+              unknownCustomer: t('leadOps.fallback.unknownCustomer'),
+              unassigned: t('lead.unassigned'),
+            }),
+          );
+
       setRows(nextRows);
       setStaffRows(userRows.length ? userRows : demoStaff.map((item) => ({ id: item.id, fullName: item.name, email: item.email, role: item.role })));
-      setActiveId((current) => nextRows.find((row: LeadRow) => row.id === current)?.id ?? nextRows[0]?.id ?? '');
+      setActiveId((current) => nextRows.find((row) => row.id === current)?.id ?? nextRows[0]?.id ?? '');
       if (leadResponse.status === 'rejected') {
         setError(t('leadOps.errors.loadFallback'));
       }
@@ -259,16 +373,15 @@ export function LeadManagementScreen() {
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [canManageUsers]);
 
   useEffect(() => {
     if (!active) return;
-    setEditDraft({ notes: active.notes, quotedPrice: active.quotedPrice ? String(active.quotedPrice) : '' });
+    setEditDraft({
+      notes: active.notes,
+      quotedPrice: active.quotedPrice ? String(active.quotedPrice) : '',
+    });
     setAssignDraft(active.ownerId ?? '');
-    setAppointmentDraft((draft) => ({
-      ...draft,
-      notes: `${active.interestedProduct}. ${active.preferredRentalDate}`,
-    }));
   }, [active]);
 
   const filteredRows = useMemo(() => {
@@ -279,31 +392,40 @@ export function LeadManagementScreen() {
       .filter((lead) => ownerFilter === 'all' || lead.ownerId === ownerFilter || (ownerFilter === 'unassigned' && !lead.ownerId))
       .filter((lead) => {
         if (!normalizedQuery) return true;
-        return [lead.customer, lead.phone, lead.email, lead.source, lead.owner, lead.interestedProduct, lead.notes]
-          .some((value) => String(value).toLowerCase().includes(normalizedQuery));
+        return [
+          lead.customer,
+          lead.phone,
+          lead.email,
+          lead.source,
+          lead.owner,
+          lead.productName,
+          lead.notes,
+          lead.inventoryItemLabel,
+        ].some((value) => String(value ?? '').toLowerCase().includes(normalizedQuery));
       })
       .sort((a, b) => urgencyScore(a) - urgencyScore(b));
   }, [ownerFilter, query, rows, sourceFilter, statusFilter]);
 
   const stats = useMemo(() => {
-    const contactDue = rows.filter((lead) => lead.status === 'new' && (minutesUntil(lead.contactDeadlineAt) ?? 0) <= 60).length;
-    const overdueContact = rows.filter((lead) => lead.status === 'new' && (minutesUntil(lead.contactDeadlineAt) ?? 1) <= 0).length;
-    const depositHolds = rows.filter((lead) => lead.status === 'deposit_requested').length;
-    const depositOverdue = rows.filter((lead) => lead.status === 'deposit_requested' && (minutesUntil(lead.depositDeadlineAt) ?? 1) <= 0).length;
-    const bookingReady = rows.filter((lead) => lead.status === 'deposit_received').length;
-    return { contactDue, overdueContact, depositHolds, depositOverdue, bookingReady };
+    const noProduct = rows.filter((lead) => !hasProductSelection(lead)).length;
+    const waitingDeposit = rows.filter((lead) => lead.status === 'deposit_requested').length;
+    const waitingAppointment = rows.filter((lead) => ['deposit_received', 'appointment_created'].includes(lead.status)).length;
+    const readyBooking = rows.filter((lead) => lead.status === 'appointment_completed').length;
+    return { noProduct, waitingDeposit, waitingAppointment, readyBooking };
   }, [rows]);
 
-  const runAction = async (key: string, operation: () => Promise<void>, success: string) => {
+  const runAction = async (key: string, operation: () => Promise<void>, successMessage: string) => {
     setBusyAction(key);
     setError(null);
     setFeedback(null);
     try {
       await operation();
       await load();
-      setFeedback({ tone: 'success', message: success });
+      setFeedback({ tone: 'success', message: successMessage });
+      return true;
     } catch (err: any) {
       setError(err?.response?.data?.message ?? t('leadOps.errors.actionFailed'));
+      return false;
     } finally {
       setBusyAction(null);
     }
@@ -348,130 +470,161 @@ export function LeadManagementScreen() {
     );
   };
 
-  const updateStatus = async (lead: LeadRow, status: LeadStatus) => {
+  const requestDeposit = async (lead: LeadRow) => {
     await runAction(
-      `status-${lead.id}`,
+      `request-deposit-${lead.id}`,
       async () => {
-        if (status === 'contacted') await leadsApi.markContacted(lead.id, { notes: t('leadOps.timeline.callLogged') });
-        else if (status === 'deposit_requested') await leadsApi.requestDeposit(lead.id, { quotedPrice: lead.quotedPrice || undefined });
-        else await leadsApi.updateStatus(lead.id, status.toUpperCase());
+        await leadsApi.requestDeposit(lead.id, { quotedPrice: lead.quotedPrice || undefined });
       },
-      t('leadOps.success.statusUpdated'),
+      t('lead.feedback.depositRequested'),
     );
   };
 
-  const archiveLead = async () => {
-    if (!active) return;
-    await runAction(
-      'archive',
+  const markContacted = async (lead: LeadRow, noteKey = 'lead.feedback.contacted') => {
+    return runAction(
+      `contact-${lead.id}`,
       async () => {
-        await leadsApi.archive(active.id);
+        await leadsApi.markContacted(lead.id, { notes: t('leadOps.timeline.callLogged') });
       },
-      t('leadOps.success.archived'),
+      t(noteKey),
     );
   };
 
   const callCustomer = async () => {
     if (!active) return;
-    window.location.href = `tel:${active.phone}`;
-    await updateStatus(active, 'contacted');
+    const logged = await markContacted(active, 'lead.feedback.contacted');
+    if (logged) {
+      window.location.assign(`tel:${active.phone}`);
+    }
   };
 
   const sendZalo = async () => {
     if (!active) return;
-    window.open(zaloUrl(active.phone), '_blank', 'noopener,noreferrer');
-    await runAction(
-      'zalo',
+    const popup = window.open('', '_blank', 'noopener,noreferrer');
+    const logged = await runAction(
+      `zalo-${active.id}`,
       async () => {
         await leadsApi.markContacted(active.id, { notes: t('leadOps.timeline.zaloSent') });
       },
-      t('leadOps.success.zaloLogged'),
+      t('lead.feedback.contacted'),
     );
+    if (logged) {
+      if (popup) {
+        popup.location.href = zaloUrl(active.phone);
+      } else {
+        window.open(zaloUrl(active.phone), '_blank', 'noopener,noreferrer');
+      }
+      return;
+    }
+    if (popup) {
+      popup.close();
+    }
   };
 
-  const createAppointment = async () => {
-    if (!active) return;
-    const start = new Date(appointmentDraft.startTime);
-    const end = new Date(start.getTime() + 60 * 60 * 1000);
+  const confirmCurrentAction = async () => {
+    if (!confirmAction) return;
+    const target = confirmAction.lead;
+    if (confirmAction.kind === 'archive') {
+      await runAction(
+        `archive-${target.id}`,
+        async () => {
+          await leadsApi.archive(target.id);
+          setConfirmAction(null);
+        },
+        t('lead.feedback.archived'),
+      );
+      return;
+    }
+
     await runAction(
-      'appointment',
+      `cancel-${target.id}`,
       async () => {
-        await appointmentsApi.create({
-          leadId: active.id,
-          customerId: active.customerId,
-          name: active.customer,
-          email: active.email,
-          phone: active.phone,
-          type: 'CONSULTATION',
-          scheduledAt: start.toISOString(),
-          startTime: start.toISOString(),
-          endTime: end.toISOString(),
-          room: appointmentDraft.room,
-          staffId: active.ownerId || undefined,
-          lifecycleStatus: 'pending',
-          notes: appointmentDraft.notes,
-        });
-        setAppointmentOpen(false);
+        await leadsApi.updateStatus(target.id, 'CANCELLED');
+        setConfirmAction(null);
       },
-      t('leadOps.success.appointmentCreated'),
+      t('lead.feedback.cancelled'),
     );
   };
 
-  const timeline = active ? [
-    { time: formatDateTime(active.createdAt), title: t('leadOps.timeline.created'), detail: active.source, tone: 'neutral' as Tone },
-    active.contactedAt ? { time: formatDateTime(active.contactedAt), title: t('leadOps.timeline.contacted'), detail: active.owner, tone: 'info' as Tone } : null,
-    active.depositRequestedAt ? { time: formatDateTime(active.depositRequestedAt), title: t('leadOps.timeline.depositRequested'), detail: timeLabel(active.depositDeadlineAt), tone: 'warning' as Tone } : null,
-    active.depositReceivedAt ? { time: formatDateTime(active.depositReceivedAt), title: t('leadOps.timeline.depositReceived'), detail: t('leadOps.timeline.readyForBooking'), tone: 'success' as Tone } : null,
-    active.convertedToBookingId ? { time: formatDateTime(active.updatedAt), title: t('leadOps.timeline.converted'), detail: active.convertedToBookingId, tone: 'success' as Tone } : null,
-  ].filter(Boolean) as Array<{ time: string; title: string; detail: string; tone?: Tone }> : [];
+  const timeline = active
+    ? [
+        { time: formatDateTime(active.createdAt), title: t('leadOps.timeline.created'), detail: active.source, tone: 'neutral' as Tone },
+        active.contactedAt ? { time: formatDateTime(active.contactedAt), title: t('leadOps.timeline.contacted'), detail: active.owner, tone: 'info' as Tone } : null,
+        active.depositRequestedAt ? { time: formatDateTime(active.depositRequestedAt), title: t('leadOps.timeline.depositRequested'), detail: relativeWindow(active.depositDeadlineAt, { fallback: t('leadOps.notSet'), overdue: t('leadOps.overdue'), left: t('leadOps.left') }), tone: 'warning' as Tone } : null,
+        active.depositReceivedAt ? { time: formatDateTime(active.depositReceivedAt), title: t('leadOps.timeline.depositReceived'), detail: t('leadOps.timeline.readyForAppointment'), tone: 'success' as Tone } : null,
+        active.appointmentTime ? { time: formatDateTime(active.appointmentTime), title: t('lead.flow.appointment'), detail: active.appointmentStatus ? t(`appointment.status.${lower(active.appointmentStatus)}`) : '-', tone: 'info' as Tone } : null,
+        active.bookingId ? { time: formatDateTime(active.updatedAt), title: t('lead.flow.booking'), detail: active.bookingId, tone: 'success' as Tone } : null,
+      ].filter(Boolean) as Array<{ time: string; title: string; detail: string; tone?: Tone }>
+    : [];
+
+  const activeSummary = active ? buildActionSummary(active, t) : null;
 
   return (
     <>
+      <FeedbackPopup
+        error={error}
+        feedback={feedback}
+        onClose={() => {
+          setError(null);
+          setFeedback(null);
+        }}
+      />
+
       <PageHeader
-        eyebrow={t('leadOps.eyebrow')}
+        eyebrow={t('lead.title')}
         title={t('leadOps.title')}
-        subtitle={t('leadOps.subtitle')}
-        nextStep={filteredRows[0] ? `${filteredRows[0].customer}: ${t(nextStep(filteredRows[0]))}` : t('leadOps.noBlockers')}
-        actions={
+        subtitle={t('lead.subtitle')}
+        nextStep={filteredRows[0] ? `${filteredRows[0].customer}: ${t(nextStepKey(filteredRows[0]))}` : t('leadOps.noBlockers')}
+        meta={
+          <div className="flex flex-wrap items-center gap-2">
+            <AdminBadge tone="accent">{t('nav.flowLead')}</AdminBadge>
+            <AdminBadge tone="neutral">
+              {filteredRows.length} / {rows.length}
+            </AdminBadge>
+          </div>
+        }
+        actions={(
           <>
-            <AdminButton variant="secondary" onClick={load} loading={loading}>{t('common.refresh')}</AdminButton>
+            <AdminButton type="button" variant="secondary" onClick={load} loading={loading}>
+              {t('common.refresh')}
+            </AdminButton>
             <PermissionButton permission="manage_leads" onClick={() => setCreateOpen(true)}>
               {t('leadOps.createLead')}
             </PermissionButton>
           </>
-        }
+        )}
       />
 
-      <SummaryRow
-        items={[
-          {
-            label: t('leadOps.stats.contactSla'),
-            value: `${stats.contactDue}`,
-            detail: stats.overdueContact ? t('leadOps.stats.overdueCount', { count: stats.overdueContact }) : t('leadOps.stats.oneHourRule'),
-            tone: stats.overdueContact ? 'danger' : stats.contactDue ? 'warning' : 'success',
-          },
-          {
-            label: t('leadOps.stats.depositWindow'),
-            value: `${stats.depositHolds}`,
-            detail: stats.depositOverdue ? t('leadOps.stats.depositOverdue', { count: stats.depositOverdue }) : t('leadOps.stats.fiveHourRule'),
-            tone: stats.depositOverdue ? 'danger' : stats.depositHolds ? 'warning' : 'neutral',
-          },
-          {
-            label: t('leadOps.stats.bookingReady'),
-            value: `${stats.bookingReady}`,
-            detail: t('leadOps.stats.readyDetail'),
-            tone: stats.bookingReady ? 'success' : 'neutral',
-          },
-          {
-            label: t('leadOps.stats.visibleLeads'),
-            value: `${filteredRows.length}`,
-            detail: t('leadOps.stats.filteredDetail'),
-            tone: 'info',
-          },
-        ]}
-      />
+      <div className="grid gap-6">
+        <SummaryRow
+          items={[
+            {
+              label: t('lead.flow.product'),
+              value: `${stats.noProduct}`,
+              detail: t('lead.no_product.description'),
+              tone: stats.noProduct ? 'warning' : 'success',
+            },
+            {
+              label: t('lead.flow.deposit'),
+              value: `${stats.waitingDeposit}`,
+              detail: t('lead.next_step.waiting_deposit'),
+              tone: stats.waitingDeposit ? 'warning' : 'neutral',
+            },
+            {
+              label: t('lead.flow.appointment'),
+              value: `${stats.waitingAppointment}`,
+              detail: t('lead.next_step.waiting_appointment_completed'),
+              tone: stats.waitingAppointment ? 'info' : 'neutral',
+            },
+            {
+              label: t('lead.flow.booking'),
+              value: `${stats.readyBooking}`,
+              detail: t('lead.next_step.open_booking'),
+              tone: stats.readyBooking ? 'success' : 'neutral',
+            },
+          ]}
+        />
 
-      <div className="mt-6">
         <ControlSurface label={t('leadOps.filters.label')}>
           <AdminInput
             className="md:col-span-2"
@@ -479,54 +632,173 @@ export function LeadManagementScreen() {
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
+
           <AdminSelect value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as 'all' | LeadStatus)}>
-            {STATUS_OPTIONS.map((option) => <option key={option.value} value={option.value}>{t(option.labelKey)}</option>)}
+            {STATUS_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {t(option.labelKey)}
+              </option>
+            ))}
           </AdminSelect>
+
           <AdminSelect value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)}>
-            {SOURCE_OPTIONS.map((source) => <option key={source} value={source}>{source === 'all' ? t('leadOps.filters.allSources') : source}</option>)}
+            {SOURCE_OPTIONS.map((source) => (
+              <option key={source} value={source}>
+                {source === 'all' ? t('leadOps.filters.allSources') : t(`leadOps.source.${source}`)}
+              </option>
+            ))}
           </AdminSelect>
+
           <AdminSelect value={ownerFilter} onChange={(event) => setOwnerFilter(event.target.value)}>
             <option value="all">{t('leadOps.filters.allStaff')}</option>
-            <option value="unassigned">{t('leadOps.unassigned')}</option>
-            {staffRows.map((staff) => <option key={staff.id} value={staff.id}>{staff.fullName}</option>)}
+            <option value="unassigned">{t('lead.unassigned')}</option>
+            {staffRows.map((staff) => (
+              <option key={staff.id} value={staff.id}>
+                {staff.fullName}
+              </option>
+            ))}
           </AdminSelect>
-          <AdminButton variant="secondary" onClick={() => { setQuery(''); setStatusFilter('all'); setSourceFilter('all'); setOwnerFilter('all'); }}>
+
+          <AdminButton
+            type="button"
+            variant="secondary"
+            onClick={() => {
+              setQuery('');
+              setStatusFilter('all');
+              setSourceFilter('all');
+              setOwnerFilter('all');
+            }}
+          >
             {t('leadOps.filters.reset')}
           </AdminButton>
         </ControlSurface>
-      </div>
 
-      <div className="mt-6">
         <WorkspaceLayout
           rail={active ? (
             <>
-              <RailSection title={t('leadOps.actionPanel')}>
-                <AdminButton className="w-full" onClick={callCustomer} loading={busyAction?.startsWith('status-')}>{t('leadOps.actions.call')}</AdminButton>
-                <AdminButton variant="secondary" className="w-full" onClick={sendZalo} loading={busyAction === 'zalo'}>{t('leadOps.actions.zalo')}</AdminButton>
-                <AdminButton variant="secondary" className="w-full" onClick={() => updateStatus(active, 'deposit_requested')} loading={busyAction?.startsWith('status-')}>
-                  {t('leadOps.actions.requestDeposit')}
-                </AdminButton>
-                <AdminButton variant="secondary" className="w-full" onClick={() => setAppointmentOpen(true)}>{t('leadOps.actions.appointment')}</AdminButton>
-                <Link className="button-primary w-full text-center" href={`/admin/bookings/new?lead=${active.id}`}>{t('leadOps.actions.convert')}</Link>
-              </RailSection>
-              <RailSection title={t('leadOps.detail.depositStatus')}>
-                <DepositProgress lead={active} />
-                <div className="mt-3 grid gap-2 text-xs text-[rgb(var(--text-secondary))]">
-                  <div className="flex justify-between"><span>{t('leadOps.detail.contactDeadline')}</span><b>{timeLabel(active.contactDeadlineAt)}</b></div>
-                  <div className="flex justify-between"><span>{t('leadOps.detail.depositDeadline')}</span><b>{timeLabel(active.depositDeadlineAt, t('leadOps.notRequested'))}</b></div>
+              <RailSection title={t('lead.panels.operationalSummary')}>
+                <div className="space-y-3">
+                  <div className="rounded-[24px] border border-[rgb(var(--surface-border))]/80 bg-[rgb(var(--surface-3))]/70 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[rgb(var(--text-muted))]">
+                          {t('lead.customer')}
+                        </p>
+                        <h3 className="mt-2 truncate text-lg font-semibold tracking-[-0.03em] text-[rgb(var(--text-primary))]">
+                          {active.customer}
+                        </h3>
+                        <p className="mt-1 truncate text-xs text-[rgb(var(--text-secondary))]">
+                          {active.phone} · {active.email}
+                        </p>
+                      </div>
+                      <StatusBadge value={active.status} tone={urgencyTone(active)} />
+                    </div>
+                  </div>
+
+                  <OperationalState
+                    title={t('lead.flow.product')}
+                    value={active.productName ?? t('lead.no_product.title')}
+                    detail={!hasProductSelection(active)
+                      ? t('lead.manual.description')
+                      : active.pickupDate
+                        ? `${formatDate(active.pickupDate)} - ${formatDate(active.returnDate)}`
+                        : t('lead.no_pickup_date.description')}
+                    tone={!hasProductSelection(active) || !hasRentalRequestContext(active) ? 'warning' : 'neutral'}
+                  />
+
+                  <OperationalState
+                    title={t('lead.flow.deposit')}
+                    value={t(`lead.status.${active.status}`)}
+                    detail={hasRequestedDeposit(active)
+                      ? relativeWindow(active.depositDeadlineAt, {
+                          fallback: t('leadOps.notSet'),
+                          overdue: t('leadOps.overdue'),
+                          left: t('leadOps.left'),
+                        })
+                      : t('lead.deposit.missing')}
+                    tone={active.status === 'deposit_expired' ? 'danger' : hasRequestedDeposit(active) ? 'info' : 'neutral'}
+                  />
+
+                  <OperationalState
+                    title={t('lead.flow.appointment')}
+                    value={active.appointmentStatus ? t(`appointment.status.${lower(active.appointmentStatus)}`) : t('lead.empty.appointment')}
+                    detail={active.appointmentTime ? formatDateTime(active.appointmentTime) : t('lead.appointment.missing_after_deposit')}
+                    tone={active.appointmentId ? 'info' : hasReceivedDeposit(active) ? 'warning' : 'neutral'}
+                  />
                 </div>
               </RailSection>
-              <RailSection title={t('leadOps.manageLead')}>
-                <AdminButton variant="secondary" className="w-full" onClick={() => setEditOpen(true)}>{t('common.edit')}</AdminButton>
-                <PermissionButton permission="manage_leads" className="button-secondary w-full" onClick={() => setAssignOpen(true)}>{t('leadOps.actions.assign')}</PermissionButton>
-                <AdminSelect value={active.status} onChange={(event) => updateStatus(active, event.target.value as LeadStatus)}>
-                  {STATUS_OPTIONS.filter((option) => option.value !== 'all').map((option) => (
-                    <option key={option.value} value={option.value}>{t(option.labelKey)}</option>
-                  ))}
-                </AdminSelect>
-                <PermissionButton permission="manage_leads" className="button-secondary w-full text-[rgb(var(--danger))]" onClick={archiveLead} disabled={busyAction === 'archive'}>
-                  {t('common.archive')}
-                </PermissionButton>
+
+              <RailSection title={t('lead.panels.quickActions')}>
+                <div className="grid gap-2">
+                  <AdminButton type="button" className="w-full" onClick={callCustomer} loading={busyAction === `contact-${active.id}`}>
+                    {t('lead.actions.call_customer')}
+                  </AdminButton>
+
+                  <AdminButton type="button" variant="secondary" className="w-full" onClick={sendZalo} loading={busyAction === `zalo-${active.id}`}>
+                    {t('lead.actions.send_zalo')}
+                  </AdminButton>
+
+                  <PermissionButton permission="manage_leads" className="button-secondary w-full" onClick={() => setAssignOpen(true)}>
+                    {t('lead.actions.assign_staff')}
+                  </PermissionButton>
+
+                  <AdminButton type="button" variant="secondary" className="w-full" onClick={() => setEditOpen(true)}>
+                    {t('lead.actions.edit_lead')}
+                  </AdminButton>
+
+                  {activeSummary?.href ? (
+                    <Link className="button-primary w-full text-center" href={activeSummary.href}>
+                      {activeSummary.label}
+                    </Link>
+                  ) : (
+                    <AdminButton
+                      type="button"
+                      className="w-full"
+                      onClick={() => requestDeposit(active)}
+                      loading={busyAction === `request-deposit-${active.id}`}
+                      disabled={!hasRentalRequestContext(active) || hasRequestedDeposit(active) || hasBooking(active)}
+                    >
+                      {activeSummary?.label ?? t('lead.actions.request_deposit')}
+                    </AdminButton>
+                  )}
+
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <AdminButton
+                      type="button"
+                      variant="secondary"
+                      className="w-full text-[rgb(var(--danger))]"
+                      onClick={() => setConfirmAction({ kind: 'cancel', lead: active })}
+                      disabled={active.status === 'cancelled' || hasBooking(active)}
+                    >
+                      {t('lead.actions.cancel_lead')}
+                    </AdminButton>
+
+                    <AdminButton
+                      type="button"
+                      variant="secondary"
+                      className="w-full text-[rgb(var(--danger))]"
+                      onClick={() => setConfirmAction({ kind: 'archive', lead: active })}
+                    >
+                      {t('lead.actions.archive_lead')}
+                    </AdminButton>
+                  </div>
+                </div>
+              </RailSection>
+
+              <RailSection title={t('lead.workflow')}>
+                <FlowHighlightCard lead={active} />
+              </RailSection>
+
+              <RailSection title={t('lead.panels.notesTimeline')}>
+                <TimelineList
+                  items={timeline.length ? timeline : [
+                    {
+                      time: formatDateTime(active.createdAt),
+                      title: t('leadOps.timeline.created'),
+                      detail: active.source,
+                    },
+                  ]}
+                />
               </RailSection>
             </>
           ) : null}
@@ -537,76 +809,152 @@ export function LeadManagementScreen() {
           <SectionCard
             title={t('leadOps.table.title')}
             description={t('leadOps.table.description')}
-            actions={loading ? <span className="inline-flex items-center gap-2 text-sm text-[rgb(var(--text-secondary))]"><AdminSpinner /> {t('common.loading')}</span> : undefined}
+            actions={loading ? (
+              <span className="inline-flex items-center gap-2 text-sm text-[rgb(var(--text-secondary))]">
+                <AdminSpinner /> {t('common.loading')}
+              </span>
+            ) : undefined}
           >
             <DataTable
               columns={[
-                t('leadOps.columns.customer'),
-                t('leadOps.columns.source'),
-                t('leadOps.columns.status'),
-                t('leadOps.columns.assignedStaff'),
-                t('leadOps.columns.contactDeadline'),
-                t('leadOps.columns.depositProgress'),
-                t('leadOps.columns.nextStep'),
-                t('common.actions'),
+                t('lead.customer'),
+                t('lead.table.product'),
+                t('lead.table.pickupDate'),
+                t('lead.table.deposit'),
+                t('lead.table.appointment'),
+                t('lead.table.nextStep'),
+                t('lead.table.actions'),
               ]}
               loading={loading}
               empty={t('leadOps.empty')}
-              rows={filteredRows.map((lead) => [
-                <button key={lead.id} type="button" className="text-left" onClick={() => setActiveId(lead.id)}>
-                  <span className="block font-semibold text-[rgb(var(--text-primary))]">{lead.customer}</span>
-                  <span className="block text-xs text-[rgb(var(--text-muted))]">{lead.phone}</span>
-                </button>,
-                <AdminBadge key={`${lead.id}-source`} tone="neutral">{lead.source}</AdminBadge>,
-                <StatusBadge key={`${lead.id}-status`} value={lead.status} tone={urgencyTone(lead)} />,
-                <span key={`${lead.id}-owner`} className={cn(!lead.ownerId && 'text-[rgb(var(--danger))]')}>{lead.owner}</span>,
-                <DeadlineCell key={`${lead.id}-contact`} lead={lead} />,
-                <DepositProgress key={`${lead.id}-deposit`} lead={lead} compact />,
-                <span key={`${lead.id}-next`} className="font-semibold text-[rgb(var(--text-primary))]">{t(nextStep(lead))}</span>,
-                <div key={`${lead.id}-actions`} className="flex flex-wrap gap-2">
-                  <AdminButton size="sm" variant="secondary" onClick={() => { setActiveId(lead.id); updateStatus(lead, 'contacted'); }}>
-                    {t('leadOps.short.call')}
-                  </AdminButton>
-                  <AdminButton size="sm" variant="secondary" onClick={() => { setActiveId(lead.id); updateStatus(lead, 'deposit_requested'); }}>
-                    {t('leadOps.short.deposit')}
-                  </AdminButton>
-                </div>,
-              ])}
+              rows={filteredRows.map((lead) => {
+                const rowAction = buildActionSummary(lead, t);
+                const selected = active?.id === lead.id;
+
+                return [
+                  <button
+                    key={lead.id}
+                    type="button"
+                    className={cn(
+                      'w-full rounded-[20px] px-3 py-2 text-left transition duration-200',
+                      selected && 'bg-[rgb(var(--surface-3))] ring-1 ring-[rgb(var(--accent-solid))]/25',
+                    )}
+                    onClick={() => setActiveId(lead.id)}
+                  >
+                    <span className="block truncate font-semibold text-[rgb(var(--text-primary))]">{lead.customer}</span>
+                    <span className="block truncate text-xs text-[rgb(var(--text-muted))]">{lead.phone}</span>
+                    <span className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[rgb(var(--text-secondary))]">
+                      <StatusBadge value={lead.status} tone={urgencyTone(lead)} />
+                      {isManualLead(lead) ? <AdminBadge tone="warning">{t('lead.manual.badge')}</AdminBadge> : null}
+                      <span className="truncate">{lead.owner}</span>
+                    </span>
+                  </button>,
+                  <ProductCell key={`${lead.id}-product`} lead={lead} />,
+                  <DateCell key={`${lead.id}-pickup`} pickupDate={lead.pickupDate} returnDate={lead.returnDate} />,
+                  <DepositCell key={`${lead.id}-deposit`} lead={lead} />,
+                  <AppointmentCell key={`${lead.id}-appointment`} lead={lead} />,
+                  <NextStepCell key={`${lead.id}-next`} lead={lead} />,
+                  <div key={`${lead.id}-actions`} className="flex flex-wrap justify-end gap-2">
+                    <Link className="button-secondary text-center" href={`/admin/leads/${lead.id}`}>
+                      {t('lead.actions.open_detail')}
+                    </Link>
+
+                    {rowAction.href ? (
+                      <Link className="button-primary text-center" href={rowAction.href}>
+                        {rowAction.label}
+                      </Link>
+                    ) : (
+                      <AdminButton
+                        type="button"
+                        size="sm"
+                        onClick={() => requestDeposit(lead)}
+                        loading={busyAction === `request-deposit-${lead.id}`}
+                        disabled={!hasRentalRequestContext(lead) || hasRequestedDeposit(lead) || hasBooking(lead)}
+                      >
+                        {rowAction.label}
+                      </AdminButton>
+                    )}
+                  </div>,
+                ];
+              })}
             />
           </SectionCard>
 
           {active ? (
-            <SectionCard title={t('leadOps.detail.title')} description={t('leadOps.detail.description')}>
-              <div className="grid gap-5 xl:grid-cols-[1fr_0.9fr]">
+            <SectionCard title={active.customer} description={t(nextStepKey(active))}>
+              <div className="grid gap-5 xl:grid-cols-[1.1fr_0.9fr]">
                 <div className="space-y-5">
-                  <div className="rounded-2xl border border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-3))] p-5">
+                  <div className="rounded-[30px] border border-[rgb(var(--surface-border))]/80 bg-[rgb(var(--surface-3))]/60 p-5 shadow-sm">
                     <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                      <div>
-                        <p className="text-xs font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">{t('leadOps.detail.customerInfo')}</p>
-                        <h2 className="mt-2 text-2xl font-semibold tracking-[-0.03em]">{active.customer}</h2>
-                        <p className="mt-2 text-sm text-[rgb(var(--text-secondary))]">{active.phone} / {active.email}</p>
+                      <div className="min-w-0">
+                        <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[rgb(var(--text-muted))]">
+                          {t('lead.flow.customer')}
+                        </p>
+                        <h2 className="mt-2 text-[32px] font-semibold tracking-[-0.045em] text-[rgb(var(--text-primary))]">
+                          {active.customer}
+                        </h2>
+                        <p className="mt-2 text-sm leading-6 text-[rgb(var(--text-secondary))]">
+                          {active.phone} / {active.email}
+                        </p>
                       </div>
-                      <StatusBadge value={active.status} tone={urgencyTone(active)} />
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <StatusBadge value={active.status} tone={urgencyTone(active)} />
+                        {isManualLead(active) ? <AdminBadge tone="warning">{t('lead.manual.badge')}</AdminBadge> : null}
+                        <AdminBadge tone="neutral">{t(nextStepKey(active))}</AdminBadge>
+                      </div>
                     </div>
                   </div>
+
                   <KeyValueList
                     items={[
-                      { label: t('leadOps.detail.product'), value: active.interestedProduct },
-                      { label: t('leadOps.detail.preferredDate'), value: active.preferredRentalDate },
-                      { label: t('leadOps.detail.source'), value: active.source },
-                      { label: t('leadOps.detail.assignedStaff'), value: active.owner },
-                      { label: t('leadOps.detail.quote'), value: active.quotedPrice ? currency(active.quotedPrice) : t('leadOps.notQuoted') },
-                      { label: t('leadOps.detail.nextAction'), value: t(nextStep(active)) },
+                      { label: t('lead.panels.productRequest'), value: active.productName ?? t('lead.no_product.title') },
+                      { label: t('lead.source'), value: t(`leadOps.source.${active.source}`) },
+                      { label: t('lead.salesOwner'), value: active.owner },
+                      { label: t('lead.budget'), value: active.quotedPrice ? currency(active.quotedPrice) : t('leadOps.notQuoted') },
                     ]}
                   />
-                  <div className="rounded-2xl border border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-2))] p-5 text-sm leading-6 text-[rgb(var(--text-secondary))]">
-                    <p className="mb-2 text-xs font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">{t('leadOps.detail.notes')}</p>
-                    {active.notes || t('leadOps.detail.noNotes')}
+
+                  <div className="rounded-[26px] border border-[rgb(var(--surface-border))]/80 bg-[rgb(var(--surface-3))]/60 p-5">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[rgb(var(--text-muted))]">
+                      {t('lead.notes')}
+                    </p>
+                    <p className="mt-3 text-sm leading-6 text-[rgb(var(--text-secondary))]">
+                      {active.notes || t('leadOps.detail.noNotes')}
+                    </p>
                   </div>
                 </div>
-                <div className="space-y-5">
-                  <SectionCard title={t('leadOps.detail.timeline')} description={t('leadOps.detail.timelineDesc')} className="shadow-none">
-                    <TimelineList items={timeline.length ? timeline : [{ time: formatDateTime(active.createdAt), title: t('leadOps.timeline.created'), detail: active.source }]} />
+
+                <div className="space-y-4">
+                  <FlowHighlightCard lead={active} />
+
+                  <SectionCard
+                    title={t('lead.flow.booking')}
+                    description={active.bookingId ? t('lead.booking.locked') : t('lead.appointment.waiting_completion')}
+                    className="shadow-none"
+                  >
+                    <KeyValueList
+                      items={[
+                        {
+                          label: t('lead.flow.deposit'),
+                          value: active.depositRequestedAt
+                            ? relativeWindow(active.depositDeadlineAt, {
+                                fallback: t('leadOps.notSet'),
+                                overdue: t('leadOps.overdue'),
+                                left: t('leadOps.left'),
+                              })
+                            : t('lead.deposit.missing'),
+                        },
+                        {
+                          label: t('lead.flow.appointment'),
+                          value: active.appointmentStatus ? t(`appointment.status.${lower(active.appointmentStatus)}`) : t('lead.empty.appointment'),
+                        },
+                        {
+                          label: t('lead.flow.booking'),
+                          value: active.bookingId ?? t('lead.empty.booking'),
+                        },
+                      ]}
+                    />
                   </SectionCard>
                 </div>
               </div>
@@ -620,24 +968,32 @@ export function LeadManagementScreen() {
         title={t('leadOps.modals.createTitle')}
         onClose={() => setCreateOpen(false)}
         size="lg"
-        footer={
+        footer={(
           <>
-            <AdminButton variant="secondary" onClick={() => setCreateOpen(false)}>{t('common.cancel')}</AdminButton>
-            <AdminButton onClick={createLead} loading={busyAction === 'create'} disabled={!createDraft.name || !createDraft.email || !createDraft.phone}>{t('leadOps.createLead')}</AdminButton>
+            <AdminButton type="button" variant="secondary" onClick={() => setCreateOpen(false)}>
+              {t('common.cancel')}
+            </AdminButton>
+            <AdminButton type="button" onClick={createLead} loading={busyAction === 'create'} disabled={!createDraft.name || !createDraft.email || !createDraft.phone}>
+              {t('leadOps.createLead')}
+            </AdminButton>
           </>
-        }
+        )}
       >
         <div className="grid gap-4 md:grid-cols-2">
           <LeadTextField label={t('leadOps.form.name')} value={createDraft.name} onChange={(value) => setCreateDraft((draft) => ({ ...draft, name: value }))} />
           <LeadTextField label={t('leadOps.form.email')} type="email" value={createDraft.email} onChange={(value) => setCreateDraft((draft) => ({ ...draft, email: value }))} />
           <LeadTextField label={t('leadOps.form.phone')} value={createDraft.phone} onChange={(value) => setCreateDraft((draft) => ({ ...draft, phone: value }))} />
-          <label className="grid gap-1.5 text-sm font-semibold">
+          <label className="grid gap-1.5 text-sm font-semibold text-[rgb(var(--text-primary))]">
             {t('leadOps.form.source')}
             <AdminSelect value={createDraft.source} onChange={(event) => setCreateDraft((draft) => ({ ...draft, source: event.target.value }))}>
-              {SOURCE_OPTIONS.filter((source) => source !== 'all').map((source) => <option key={source} value={source}>{source}</option>)}
+              {SOURCE_OPTIONS.filter((source) => source !== 'all').map((source) => (
+                <option key={source} value={source}>
+                  {t(`leadOps.source.${source}`)}
+                </option>
+              ))}
             </AdminSelect>
           </label>
-          <label className="grid gap-1.5 text-sm font-semibold md:col-span-2">
+          <label className="grid gap-1.5 text-sm font-semibold text-[rgb(var(--text-primary))] md:col-span-2">
             {t('leadOps.form.notes')}
             <textarea className="field h-24 py-3" value={createDraft.notes} onChange={(event) => setCreateDraft((draft) => ({ ...draft, notes: event.target.value }))} />
           </label>
@@ -649,16 +1005,20 @@ export function LeadManagementScreen() {
         title={t('leadOps.modals.editTitle')}
         onClose={() => setEditOpen(false)}
         size="lg"
-        footer={
+        footer={(
           <>
-            <AdminButton variant="secondary" onClick={() => setEditOpen(false)}>{t('common.cancel')}</AdminButton>
-            <AdminButton onClick={editLead} loading={busyAction === 'edit'}>{t('common.save')}</AdminButton>
+            <AdminButton type="button" variant="secondary" onClick={() => setEditOpen(false)}>
+              {t('common.cancel')}
+            </AdminButton>
+            <AdminButton type="button" onClick={editLead} loading={busyAction === 'edit'}>
+              {t('common.save')}
+            </AdminButton>
           </>
-        }
+        )}
       >
         <div className="grid gap-4">
           <LeadTextField label={t('leadOps.form.quote')} type="number" value={editDraft.quotedPrice} onChange={(value) => setEditDraft((draft) => ({ ...draft, quotedPrice: value }))} />
-          <label className="grid gap-1.5 text-sm font-semibold">
+          <label className="grid gap-1.5 text-sm font-semibold text-[rgb(var(--text-primary))]">
             {t('leadOps.form.notes')}
             <textarea className="field h-32 py-3" value={editDraft.notes} onChange={(event) => setEditDraft((draft) => ({ ...draft, notes: event.target.value }))} />
           </label>
@@ -669,39 +1029,45 @@ export function LeadManagementScreen() {
         open={assignOpen}
         title={t('leadOps.modals.assignTitle')}
         onClose={() => setAssignOpen(false)}
-        footer={
+        footer={(
           <>
-            <AdminButton variant="secondary" onClick={() => setAssignOpen(false)}>{t('common.cancel')}</AdminButton>
-            <AdminButton onClick={assignLead} loading={busyAction === 'assign'} disabled={!assignDraft}>{t('leadOps.actions.assign')}</AdminButton>
+            <AdminButton type="button" variant="secondary" onClick={() => setAssignOpen(false)}>
+              {t('common.cancel')}
+            </AdminButton>
+            <AdminButton type="button" onClick={assignLead} loading={busyAction === 'assign'} disabled={!assignDraft}>
+              {t('lead.actions.assign_staff')}
+            </AdminButton>
           </>
-        }
+        )}
       >
         <AdminSelect value={assignDraft} onChange={(event) => setAssignDraft(event.target.value)}>
-          <option value="">{t('leadOps.unassigned')}</option>
-          {staffRows.map((staff) => <option key={staff.id} value={staff.id}>{staff.fullName} / {staff.role ?? 'staff'}</option>)}
+          <option value="">{t('lead.unassigned')}</option>
+          {staffRows.map((staff) => (
+            <option key={staff.id} value={staff.id}>
+              {staff.fullName}{staff.role ? ` / ${staff.role}` : ''}
+            </option>
+          ))}
         </AdminSelect>
       </AdminModal>
 
       <AdminModal
-        open={appointmentOpen}
-        title={t('leadOps.modals.appointmentTitle')}
-        onClose={() => setAppointmentOpen(false)}
-        size="lg"
-        footer={
+        open={Boolean(confirmAction)}
+        title={confirmAction?.kind === 'archive' ? t('lead.confirm.archiveTitle') : t('lead.confirm.cancelTitle')}
+        onClose={() => setConfirmAction(null)}
+        footer={(
           <>
-            <AdminButton variant="secondary" onClick={() => setAppointmentOpen(false)}>{t('common.cancel')}</AdminButton>
-            <AdminButton onClick={createAppointment} loading={busyAction === 'appointment'}>{t('leadOps.actions.appointment')}</AdminButton>
+            <AdminButton type="button" variant="secondary" onClick={() => setConfirmAction(null)}>
+              {t('common.cancel')}
+            </AdminButton>
+            <AdminButton type="button" onClick={confirmCurrentAction} loading={busyAction === `${confirmAction?.kind}-${confirmAction?.lead.id}`}>
+              {confirmAction?.kind === 'archive' ? t('lead.actions.archive_lead') : t('lead.actions.cancel_lead')}
+            </AdminButton>
           </>
-        }
+        )}
       >
-        <div className="grid gap-4 md:grid-cols-2">
-          <LeadTextField label={t('leadOps.form.appointmentTime')} type="datetime-local" value={appointmentDraft.startTime} onChange={(value) => setAppointmentDraft((draft) => ({ ...draft, startTime: value }))} />
-          <LeadTextField label={t('leadOps.form.room')} value={appointmentDraft.room} onChange={(value) => setAppointmentDraft((draft) => ({ ...draft, room: value }))} />
-          <label className="grid gap-1.5 text-sm font-semibold md:col-span-2">
-            {t('leadOps.form.notes')}
-            <textarea className="field h-24 py-3" value={appointmentDraft.notes} onChange={(event) => setAppointmentDraft((draft) => ({ ...draft, notes: event.target.value }))} />
-          </label>
-        </div>
+        <p className="text-sm leading-6 text-[rgb(var(--text-secondary))]">
+          {confirmAction?.kind === 'archive' ? t('lead.confirm.archiveDescription') : t('lead.confirm.cancelDescription')}
+        </p>
       </AdminModal>
     </>
   );
@@ -719,53 +1085,245 @@ function LeadTextField({
   type?: string;
 }) {
   return (
-    <label className="grid gap-1.5 text-sm font-semibold">
+    <label className="grid gap-1.5 text-sm font-semibold text-[rgb(var(--text-primary))]">
       {label}
       <AdminInput type={type} value={value} onChange={(event) => onChange(event.target.value)} />
     </label>
   );
 }
 
-function DeadlineCell({ lead }: { lead: LeadRow }) {
+function ProductCell({ lead }: { lead: LeadRow }) {
   const { t } = useI18n();
-  const tone = urgencyTone(lead);
+  if (!hasProductSelection(lead)) {
+    return (
+      <div className="rounded-[18px] border border-dashed border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-3))]/70 px-4 py-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="text-sm font-semibold text-[rgb(var(--text-primary))]">{t('lead.no_product.title')}</div>
+          <AdminBadge tone="warning">{t('lead.manual.badge')}</AdminBadge>
+        </div>
+        <div className="mt-1 text-xs leading-5 text-[rgb(var(--text-secondary))]">{t('lead.no_product.description')}</div>
+      </div>
+    );
+  }
+
   return (
     <div className="grid gap-1">
-      <span className={cn('font-semibold', tone === 'danger' && 'text-[rgb(var(--danger))]', tone === 'warning' && 'text-[rgb(var(--warning))]')}>
-        {timeLabel(lead.contactDeadlineAt)}
+      <span className="font-semibold text-[rgb(var(--text-primary))]">{lead.productName}</span>
+      <span className="text-xs text-[rgb(var(--text-secondary))]">
+        {lead.variantName ?? t('leadFlow.form.optionalPlaceholder')}
+        {lead.inventoryItemLabel ? ` · ${lead.inventoryItemLabel}` : ''}
       </span>
-      <span className="text-xs text-[rgb(var(--text-muted))]">{t('leadOps.stats.oneHourRule')}</span>
     </div>
   );
 }
 
-function DepositProgress({ lead, compact = false }: { lead: LeadRow; compact?: boolean }) {
+function DateCell({ pickupDate, returnDate }: { pickupDate?: string; returnDate?: string }) {
   const { t } = useI18n();
-  const percent = depositPercent(lead);
-  const tone = urgencyTone(lead);
-  const label =
-    lead.status === 'deposit_received' || lead.status === 'booking_created'
-      ? t('leadOps.deposit.paid')
-      : lead.status === 'deposit_requested'
-        ? timeLabel(lead.depositDeadlineAt)
-        : t('leadOps.notRequested');
+  if (!pickupDate) {
+    return (
+      <div className="text-sm text-[rgb(var(--text-secondary))]">
+        <div className="font-semibold text-[rgb(var(--text-primary))]">{t('lead.no_pickup_date.title')}</div>
+        <div className="mt-1 text-xs">{t('lead.no_pickup_date.description')}</div>
+      </div>
+    );
+  }
 
   return (
-    <div className={cn('w-full', !compact && 'rounded-2xl border border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-3))] p-4')}>
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <span className="text-xs font-bold uppercase tracking-[0.14em] text-[rgb(var(--text-muted))]">{compact ? t('leadOps.deposit.label') : t('leadOps.deposit.window')}</span>
-        <span className="text-xs font-semibold text-[rgb(var(--text-secondary))]">{label}</span>
-      </div>
-      <div className="h-2 overflow-hidden rounded-full bg-[rgb(var(--surface-border))]/70">
-        <div
-          className={cn(
-            'h-full rounded-full transition-all duration-300',
-            tone === 'danger' ? 'bg-[rgb(var(--danger))]' : tone === 'warning' ? 'bg-[rgb(var(--warning))]' : 'bg-[rgb(var(--success))]',
-          )}
-          style={{ width: `${percent}%` }}
-        />
-      </div>
-      {!compact && <p className="mt-2 text-xs leading-5 text-[rgb(var(--text-secondary))]">{t('leadOps.deposit.rule')}</p>}
+    <div className="grid gap-1">
+      <span className="font-semibold text-[rgb(var(--text-primary))]">{formatDate(pickupDate)}</span>
+      <span className="text-xs text-[rgb(var(--text-secondary))]">{returnDate ? formatDate(returnDate) : '-'}</span>
     </div>
   );
+}
+
+function DepositCell({ lead }: { lead: LeadRow }) {
+  const { t } = useI18n();
+
+  const requested = hasRequestedDeposit(lead);
+  const received = hasReceivedDeposit(lead);
+  const expired = lead.status === 'deposit_expired';
+
+  const tone: Tone = expired ? 'danger' : received ? 'success' : requested ? 'warning' : 'neutral';
+
+  const title = !requested
+    ? t('lead.deposit.missing')
+    : received
+      ? t('lead.status.deposit_received')
+      : expired
+        ? t('lead.status.deposit_expired')
+        : t('lead.status.deposit_requested');
+
+  const detail = !requested
+    ? t('lead.deposit.reserve_pending')
+    : lead.depositDeadlineAt
+      ? formatDateTime(lead.depositDeadlineAt)
+      : t('leadOps.notSet');
+
+  return (
+    <div
+      className={cn(
+        'min-w-[190px] rounded-[20px] border px-3.5 py-3 shadow-sm transition duration-200',
+        'bg-[rgb(var(--surface-3))]/65',
+        tone === 'success' && 'border-[rgb(var(--success))]/25 bg-[rgb(var(--success))]/7',
+        tone === 'warning' && 'border-[rgb(var(--warning))]/25 bg-[rgb(var(--warning))]/7',
+        tone === 'danger' && 'border-[rgb(var(--danger))]/25 bg-[rgb(var(--danger))]/7',
+        tone === 'neutral' && 'border-[rgb(var(--surface-border))]/80',
+      )}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold text-[rgb(var(--text-primary))]">
+            {title}
+          </p>
+          <p className="mt-1 truncate text-xs text-[rgb(var(--text-secondary))]">
+            {detail}
+          </p>
+        </div>
+
+        <span
+          className={cn(
+            'h-2.5 w-2.5 shrink-0 rounded-full',
+            tone === 'success' && 'bg-[rgb(var(--success))]',
+            tone === 'warning' && 'bg-[rgb(var(--warning))]',
+            tone === 'danger' && 'bg-[rgb(var(--danger))]',
+            tone === 'neutral' && 'bg-[rgb(var(--text-muted))]',
+          )}
+        />
+      </div>
+    </div>
+  );
+}
+
+function AppointmentCell({ lead }: { lead: LeadRow }) {
+  const { t } = useI18n();
+  if (!lead.appointmentId) {
+    return (
+      <div className="grid gap-1 text-sm text-[rgb(var(--text-secondary))]">
+        <span className="font-semibold text-[rgb(var(--text-primary))]">{t('lead.empty.appointment')}</span>
+        <span className="text-xs">{hasReceivedDeposit(lead) ? t('lead.appointment.missing_after_deposit') : t('lead.appointment.waiting_completion')}</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-1">
+      <StatusBadge value={lead.appointmentStatus ? t(`appointment.status.${lower(lead.appointmentStatus)}`) : '-'} tone="info" />
+      <span className="text-xs text-[rgb(var(--text-secondary))]">{formatDateTime(lead.appointmentTime)}</span>
+    </div>
+  );
+}
+
+function NextStepCell({ lead }: { lead: LeadRow }) {
+  const { t } = useI18n();
+  return (
+    <div className="grid gap-1">
+      <span className="font-semibold text-[rgb(var(--text-primary))]">{t(nextStepKey(lead))}</span>
+      <span className="text-xs text-[rgb(var(--text-secondary))]">
+        {hasBooking(lead)
+          ? t('lead.booking.locked')
+          : !hasProductSelection(lead)
+            ? t('lead.no_product.description')
+            : lead.status === 'deposit_requested'
+              ? t('lead.deposit.deadline')
+              : lead.status === 'appointment_created'
+                ? t('lead.appointment.waiting_completion')
+                : t('lead.subtitle')}
+      </span>
+    </div>
+  );
+}
+
+function OperationalState({
+  title,
+  value,
+  detail,
+  tone = 'neutral',
+}: {
+  title: string;
+  value: string;
+  detail: string;
+  tone?: Tone;
+}) {
+  return (
+    <div
+      className={cn(
+        'rounded-[20px] border px-4 py-4 shadow-sm',
+        tone === 'warning'
+          ? 'border-[rgb(var(--warning))]/20 bg-[rgb(var(--warning))]/7'
+          : tone === 'danger'
+            ? 'border-[rgb(var(--danger))]/20 bg-[rgb(var(--danger))]/7'
+            : tone === 'info'
+              ? 'border-[rgb(var(--info))]/18 bg-[rgb(var(--info))]/6'
+              : 'border-[rgb(var(--surface-border))]/80 bg-[rgb(var(--surface-3))]/70',
+      )}
+    >
+      <p className="text-[10px] font-bold uppercase tracking-[0.17em] text-[rgb(var(--text-muted))]">{title}</p>
+      <p className="mt-2 text-sm font-semibold text-[rgb(var(--text-primary))]">{value}</p>
+      <p className="mt-1 text-xs leading-5 text-[rgb(var(--text-secondary))]">{detail}</p>
+    </div>
+  );
+}
+
+function FlowHighlightCard({ lead }: { lead: LeadRow }) {
+  const { t } = useI18n();
+  const items = [
+    {
+      title: t('lead.flow.product'),
+      done: hasProductSelection(lead),
+      detail: hasProductSelection(lead) ? (lead.productName ?? '-') : t('lead.no_product.title'),
+    },
+    {
+      title: t('lead.flow.deposit'),
+      done: hasRequestedDeposit(lead),
+      detail: hasRequestedDeposit(lead) ? t(`lead.status.${lead.status}`) : t('lead.deposit.missing'),
+    },
+    {
+      title: t('lead.flow.appointment'),
+      done: hasAppointment(lead),
+      detail: lead.appointmentStatus ? t(`appointment.status.${lower(lead.appointmentStatus)}`) : t('lead.empty.appointment'),
+    },
+    {
+      title: t('lead.flow.booking'),
+      done: hasBooking(lead),
+      detail: lead.bookingId ?? t('lead.empty.booking'),
+    },
+  ];
+
+  return (
+    <SectionCard title={t('lead.workflow')} description={t(nextStepKey(lead))} className="shadow-none">
+      <div className="grid gap-3">
+        {items.map((item, index) => (
+          <div
+            key={item.title}
+            className={cn(
+              'relative overflow-hidden rounded-[20px] border px-4 py-3 transition duration-200',
+              item.done
+                ? 'border-[rgb(var(--success))]/20 bg-[rgb(var(--success))]/7'
+                : 'border-[rgb(var(--surface-border))]/80 bg-[rgb(var(--surface-3))]/70',
+            )}
+          >
+            <div className="flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="grid h-6 w-6 place-items-center rounded-full border border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-2))]/80 text-[10px] font-bold text-[rgb(var(--text-muted))]">
+                    {index + 1}
+                  </span>
+                  <p className="truncate text-sm font-semibold text-[rgb(var(--text-primary))]">{item.title}</p>
+                </div>
+                <p className="mt-1.5 truncate pl-8 text-xs text-[rgb(var(--text-secondary))]">{item.detail}</p>
+              </div>
+              <AdminBadge tone={item.done ? 'success' : 'neutral'}>
+                {item.done ? t('lead.flow.complete') : t('lead.flow.pending')}
+              </AdminBadge>
+            </div>
+          </div>
+        ))}
+      </div>
+    </SectionCard>
+  );
+}
+
+function zaloUrl(phone: string) {
+  const digits = phone.replace(/[^\d]/g, '');
+  return digits ? `https://zalo.me/${digits}` : 'https://zalo.me';
 }

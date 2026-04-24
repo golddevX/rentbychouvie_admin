@@ -8,6 +8,7 @@ import { useI18n } from '@/hooks/useI18n';
 import {
   ControlSurface,
   DataTable,
+  FeedbackPopup,
   InlineAlert,
   KeyValueList,
   PageHeader,
@@ -20,8 +21,8 @@ import {
 } from '@/components/admin/ui';
 import { AdminBadge, AdminButton, AdminInput, AdminModal, AdminSelect, AdminSpinner, cn } from '@/components/admin/primitives';
 
-type AppointmentType = 'consultation' | 'fitting' | 'pickup' | 'return';
-type AppointmentStatus = 'scheduled' | 'checked_in' | 'completed' | 'cancelled';
+type AppointmentType = 'consultation' | 'fitting' | 'pickup' | 'delivery_preparation' | 'return';
+type AppointmentStatus = 'scheduled' | 'checked_in' | 'completed' | 'cancelled' | 'no_show';
 type ViewMode = 'calendar' | 'list';
 type RangeMode = 'day' | 'week';
 
@@ -49,8 +50,8 @@ type AppointmentRow = {
 type StaffOption = { id: string; fullName: string };
 type ItemOption = { id: string; serialNumber: string; status?: string };
 
-const TYPE_OPTIONS: AppointmentType[] = ['consultation', 'fitting', 'pickup', 'return'];
-const STATUS_OPTIONS: AppointmentStatus[] = ['scheduled', 'checked_in', 'completed', 'cancelled'];
+const TYPE_OPTIONS: AppointmentType[] = ['consultation', 'fitting', 'pickup', 'delivery_preparation', 'return'];
+const STATUS_OPTIONS: AppointmentStatus[] = ['scheduled', 'checked_in', 'completed', 'cancelled', 'no_show'];
 
 function toIsoLocal(value: Date) {
   const offset = value.getTimezoneOffset();
@@ -102,7 +103,8 @@ function normalizeStatus(row: any): AppointmentStatus {
   const status = String(row.status ?? '').toLowerCase();
   if (lifecycle === 'checked_in' || status === 'checked_in') return 'checked_in';
   if (lifecycle === 'completed' || status === 'completed') return 'completed';
-  if (lifecycle === 'cancelled' || lifecycle === 'no_show' || status === 'cancelled') return 'cancelled';
+  if (lifecycle === 'no_show' || status === 'no_show') return 'no_show';
+  if (lifecycle === 'cancelled' || status === 'cancelled') return 'cancelled';
   return 'scheduled';
 }
 
@@ -135,13 +137,14 @@ function typeTone(type: AppointmentType): Tone {
   if (type === 'consultation') return 'accent';
   if (type === 'fitting') return 'info';
   if (type === 'pickup') return 'success';
+  if (type === 'delivery_preparation') return 'warning';
   return 'warning';
 }
 
 function statusTone(status: AppointmentStatus): Tone {
   if (status === 'completed') return 'success';
   if (status === 'checked_in') return 'info';
-  if (status === 'cancelled') return 'danger';
+  if (status === 'cancelled' || status === 'no_show') return 'danger';
   return 'warning';
 }
 
@@ -149,8 +152,18 @@ function nextStepKey(row: AppointmentRow) {
   if (row.status === 'scheduled') return new Date(row.startTime).getTime() <= Date.now() + 30 * 60000 ? 'appointmentOps.next.checkIn' : 'appointmentOps.next.prepare';
   if (row.status === 'checked_in') return 'appointmentOps.next.complete';
   if (row.status === 'completed' && (row.type === 'consultation' || row.type === 'fitting')) return 'appointmentOps.next.convert';
-  if (row.status === 'cancelled') return 'appointmentOps.next.reschedule';
+  if (row.status === 'cancelled' || row.status === 'no_show') return 'appointmentOps.next.reschedule';
   return 'appointmentOps.next.done';
+}
+
+function appointmentTypeLabel(type: AppointmentType, t: (key: string) => string) {
+  if (type === 'delivery_preparation') return t('leadFlow.appointmentType.delivery_preparation');
+  return t(`appointmentOps.type.${type}`);
+}
+
+function appointmentStatusLabel(status: AppointmentStatus, t: (key: string) => string) {
+  if (status === 'no_show') return t('leadFlow.appointmentStatus.no_show');
+  return t(`appointment.status.${status}`);
 }
 
 function sourceLabel(row: AppointmentRow, t: (key: string) => string) {
@@ -426,6 +439,15 @@ export default function AppointmentsPage() {
 
   return (
     <>
+      <FeedbackPopup
+        error={error}
+        feedback={feedback}
+        onClose={() => {
+          setError(null);
+          setFeedback(null);
+        }}
+      />
+
       <PageHeader
         eyebrow={t('appointmentOps.eyebrow')}
         title={t('appointmentOps.title')}
@@ -458,11 +480,11 @@ export default function AppointmentsPage() {
           />
           <AdminSelect value={typeFilter} onChange={(event) => setTypeFilter(event.target.value as 'all' | AppointmentType)}>
             <option value="all">{t('appointmentOps.controls.allTypes')}</option>
-            {TYPE_OPTIONS.map((type) => <option key={type} value={type}>{t(`appointmentOps.type.${type}`)}</option>)}
+            {TYPE_OPTIONS.map((type) => <option key={type} value={type}>{appointmentTypeLabel(type, t)}</option>)}
           </AdminSelect>
           <AdminSelect value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as 'all' | AppointmentStatus)}>
             <option value="all">{t('appointmentOps.controls.allStatuses')}</option>
-            {STATUS_OPTIONS.map((status) => <option key={status} value={status}>{t(`appointment.status.${status}`)}</option>)}
+            {STATUS_OPTIONS.map((status) => <option key={status} value={status}>{appointmentStatusLabel(status, t)}</option>)}
           </AdminSelect>
           <AdminSelect value={staffFilter} onChange={(event) => setStaffFilter(event.target.value)}>
             <option value="all">{t('appointmentOps.controls.allStaff')}</option>
@@ -486,9 +508,9 @@ export default function AppointmentsPage() {
                     <button key={row.id} type="button" className="queue-row w-full text-left" onClick={() => setActiveId(row.id)}>
                       <div>
                         <p className="text-sm font-semibold">{formatTime(row.startTime)} / {row.customerName}</p>
-                        <p className="mt-1 text-xs text-[rgb(var(--text-muted))]">{t(`appointmentOps.type.${row.type}`)} / {row.staffName}</p>
+                        <p className="mt-1 text-xs text-[rgb(var(--text-muted))]">{appointmentTypeLabel(row.type, t)} / {row.staffName}</p>
                       </div>
-                      <StatusBadge value={row.status} tone={statusTone(row.status)} />
+                    <StatusBadge value={appointmentStatusLabel(row.status, t)} tone={statusTone(row.status)} />
                     </button>
                   ))}
                   {!upcomingRows.length && !todayRows.length ? <p className="text-sm text-[rgb(var(--text-muted))]">{t('appointmentOps.noUpcoming')}</p> : null}
@@ -509,9 +531,11 @@ export default function AppointmentsPage() {
                     </AdminButton>
                     {active.leadId ? <Link className="button-secondary w-full text-center" href={`/admin/leads/${active.leadId}`}>{t('appointmentOps.actions.openLead')}</Link> : null}
                     {active.bookingId ? <Link className="button-secondary w-full text-center" href={`/admin/bookings/${active.bookingId}`}>{t('appointmentOps.actions.openBooking')}</Link> : null}
-                    <Link className="button-primary w-full text-center" href={active.leadId ? `/admin/bookings/new?lead=${active.leadId}` : '/admin/bookings/new'}>
-                      {t('appointmentOps.actions.convert')}
-                    </Link>
+                    {!active.leadId ? (
+                      <Link className="button-primary w-full text-center" href="/admin/bookings/new">
+                        {t('appointmentOps.actions.convert')}
+                      </Link>
+                    ) : null}
                   </RailSection>
                   <RailSection title={t('appointmentOps.rail.detail')}>
                     <KeyValueList
@@ -708,7 +732,7 @@ function CalendarView({
                     >
                       <div className="mb-2 flex items-center justify-between gap-2">
                         <span className="text-xs font-bold">{formatTime(row.startTime)}</span>
-                        <AdminBadge tone={typeTone(row.type)}>{t(`appointmentOps.type.${row.type}`)}</AdminBadge>
+                        <AdminBadge tone={typeTone(row.type)}>{appointmentTypeLabel(row.type, t)}</AdminBadge>
                       </div>
                       <p className="truncate text-sm font-semibold">{row.customerName}</p>
                       <p className="mt-1 truncate text-xs text-[rgb(var(--text-muted))]">{row.staffName} / {row.room ?? '-'}</p>
@@ -779,6 +803,7 @@ function AppointmentFormModal({
             <option value="CONSULTATION">{t('appointmentOps.type.consultation')}</option>
             <option value="FITTING">{t('appointmentOps.type.fitting')}</option>
             <option value="PICKUP">{t('appointmentOps.type.pickup')}</option>
+            <option value="DELIVERY_PREPARATION">{t('leadFlow.appointmentType.delivery_preparation')}</option>
             <option value="RETURN">{t('appointmentOps.type.return')}</option>
           </AdminSelect>
         </label>
