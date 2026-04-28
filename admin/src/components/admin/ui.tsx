@@ -862,7 +862,6 @@ export function AppShell({ children }: { children: ReactNode }) {
           [t('nav.leads'), '/admin/leads', 'manage_leads'],
           [t('nav.appointments'), '/admin/appointments', 'manage_appointments'],
           [t('nav.bookings'), '/admin/bookings', 'manage_bookings'],
-          [t('nav.rentals'), '/admin/rental-orders', 'manage_bookings'],
           [t('nav.payments'), '/admin/payments', 'view_payments'],
           [t('nav.receipts'), '/admin/receipts', 'print_receipts'],
         ],

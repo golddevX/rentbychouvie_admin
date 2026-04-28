@@ -55,8 +55,8 @@ function resolveState(kind: string, id: string, t: (key: string, params?: Record
       subtitle: t('confirmation.rentalOrderCreated.subtitle'),
       status: t('confirmation.status.created'),
       actions: [
-        { label: t('confirmation.actions.openOrderDetail'), href: `/admin/rental-orders/${id}` },
-        { label: t('confirmation.actions.backToRentalOrders'), href: '/admin/rental-orders', variant: 'secondary' },
+        { label: t('confirmation.actions.openOrderDetail'), href: `/admin/bookings/${id}` },
+        { label: t('confirmation.actions.backToRentalOrders'), href: '/admin/bookings', variant: 'secondary' },
       ],
     },
     'payment-success': {
@@ -65,7 +65,7 @@ function resolveState(kind: string, id: string, t: (key: string, params?: Record
       subtitle: t('confirmation.paymentSuccess.subtitle'),
       status: t('confirmation.status.paid'),
       actions: [
-        { label: t('confirmation.actions.openRentalOrder'), href: `/admin/rental-orders/${id}` },
+        { label: t('confirmation.actions.openRentalOrder'), href: `/admin/bookings/${id}` },
         { label: t('confirmation.actions.openPaymentDesk'), href: '/admin/payments', variant: 'secondary' },
       ],
     },
@@ -75,7 +75,7 @@ function resolveState(kind: string, id: string, t: (key: string, params?: Record
       subtitle: t('confirmation.paymentFailed.subtitle'),
       status: t('confirmation.status.failed'),
       actions: [
-        { label: t('confirmation.actions.retryFromOrder'), href: `/admin/rental-orders/${id}` },
+        { label: t('confirmation.actions.retryFromOrder'), href: `/admin/bookings/${id}` },
         { label: t('confirmation.actions.openPaymentDesk'), href: '/admin/payments', variant: 'secondary' },
       ],
     },
@@ -85,8 +85,8 @@ function resolveState(kind: string, id: string, t: (key: string, params?: Record
       subtitle: t('confirmation.paymentPending.subtitle'),
       status: t('confirmation.status.pending'),
       actions: [
-        { label: t('confirmation.actions.openOrderDetail'), href: `/admin/rental-orders/${id}` },
-        { label: t('confirmation.actions.backToRentalOrders'), href: '/admin/rental-orders', variant: 'secondary' },
+        { label: t('confirmation.actions.openOrderDetail'), href: `/admin/bookings/${id}` },
+        { label: t('confirmation.actions.backToRentalOrders'), href: '/admin/bookings', variant: 'secondary' },
       ],
     },
     cancellation: {

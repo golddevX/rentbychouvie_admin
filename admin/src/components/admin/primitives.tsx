@@ -49,7 +49,7 @@ export function AdminCard({
 }
 
 type AdminButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: 'primary' | 'secondary' | 'ghost';
+  variant?: 'primary' | 'secondary' | 'ghost' | 'danger';
   size?: 'sm' | 'md' | 'lg';
   loading?: boolean;
   leftIcon?: ReactNode;
@@ -72,6 +72,7 @@ export function AdminButton({
     primary: 'button-primary',
     secondary: 'button-secondary',
     ghost: 'button-ghost',
+    danger: 'button-danger',
   };
   const sizes = {
     sm: 'min-h-9 px-3 text-sm',
@@ -278,6 +279,31 @@ export function AdminBadge({
   children: ReactNode;
 }) {
   return <span className={cn('status-badge-base', `status-badge-${tone}`, className)}>{children}</span>;
+}
+
+export function AdminIconButton({
+  className,
+  variant = 'secondary',
+  size = 'sm',
+  children,
+  ...props
+}: Omit<AdminButtonProps, 'leftIcon' | 'rightIcon'>) {
+  const sizes = {
+    sm: 'h-10 w-10 p-0',
+    md: 'h-11 w-11 p-0',
+    lg: 'h-12 w-12 p-0',
+  };
+
+  return (
+    <AdminButton
+      {...props}
+      variant={variant}
+      size={size}
+      className={cn('shrink-0', sizes[size], className)}
+    >
+      {children}
+    </AdminButton>
+  );
 }
 
 type ModalSize = 'sm' | 'md' | 'lg' | 'xl';

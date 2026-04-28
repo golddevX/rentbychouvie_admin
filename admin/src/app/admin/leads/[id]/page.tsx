@@ -10,7 +10,6 @@ import { useAuthStore } from '@/store/auth.store';
 import {
   FeedbackPopup,
   InlineAlert,
-  KeyValueList,
   PageHeader,
   RailSection,
   SectionCard,
@@ -18,6 +17,7 @@ import {
   TimelineList,
   WorkspaceLayout,
 } from '@/components/admin/ui';
+import { ColorPicker, MoneyInput, ProductCardSelect, SizeSelector, parseImageList, type LeadProductOption } from '@/components/admin/lead-ui';
 import { AdminBadge, AdminButton, AdminInput, AdminModal, AdminSelect, AdminSpinner, cn } from '@/components/admin/primitives';
 import type { Tone } from '@/lib/admin/demo-data';
 
@@ -81,17 +81,7 @@ type LeadDetail = {
   updatedAt?: string;
 };
 
-type ProductOption = {
-  id: string;
-  name: string;
-  price: number;
-  variants: Array<{
-    id: string;
-    name: string;
-    size?: string | null;
-    color?: string | null;
-  }>;
-};
+type ProductOption = LeadProductOption;
 
 type InventoryOption = {
   id: string;
@@ -352,6 +342,82 @@ function zaloUrl(phone: string) {
   return digits ? `https://zalo.me/${digits}` : 'https://zalo.me';
 }
 
+function DotIcon() {
+  return <span className="block h-2.5 w-2.5 rounded-full bg-current" aria-hidden="true" />;
+}
+
+function BoxIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className="h-5 w-5" aria-hidden="true">
+      <path d="M3 6.5L10 3l7 3.5M3 6.5V14l7 3 7-3V6.5M3 6.5l7 3.5m7-3.5L10 10" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function WalletIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className="h-5 w-5" aria-hidden="true">
+      <path d="M4 5.5h10.75A1.25 1.25 0 0 1 16 6.75V14a1.25 1.25 0 0 1-1.25 1.25H5.25A1.25 1.25 0 0 1 4 14V5.5Zm0 0L12.5 3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M16 9.25h-3a1.5 1.5 0 0 0 0 3h3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function CalendarIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className="h-5 w-5" aria-hidden="true">
+      <path d="M5.5 3.75v2.5M14.5 3.75v2.5M4.25 6h11.5A1.25 1.25 0 0 1 17 7.25v8.5A1.25 1.25 0 0 1 15.75 17H4.25A1.25 1.25 0 0 1 3 15.75v-8.5A1.25 1.25 0 0 1 4.25 6Z" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M3 8.75h14" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className="h-5 w-5" aria-hidden="true">
+      <path d="m4.75 10.5 3.25 3.25 7.25-7.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function DetailField({
+  label,
+  value,
+  helper,
+}: {
+  label: string;
+  value: ReactNode;
+  helper?: string;
+}) {
+  return (
+    <div className="rounded-[22px] border border-[rgb(var(--surface-border))]/75 bg-[rgb(var(--surface-3))]/66 px-4 py-3.5">
+      <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">{label}</p>
+      <div className="mt-2 text-sm font-semibold text-[rgb(var(--text-primary))]">{value}</div>
+      {helper ? <p className="mt-1.5 text-xs leading-5 text-[rgb(var(--text-secondary))]">{helper}</p> : null}
+    </div>
+  );
+}
+
+function FormBlock({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="rounded-[24px] border border-[rgb(var(--surface-border))]/80 bg-[rgb(var(--surface-2))]/88 p-5 shadow-[0_14px_34px_rgba(15,23,42,0.05)]">
+      <div className="mb-4">
+        <p className="text-base font-semibold tracking-[-0.02em] text-[rgb(var(--text-primary))]">{title}</p>
+        <p className="mt-1 text-sm leading-6 text-[rgb(var(--text-secondary))]">{description}</p>
+      </div>
+      <div className="grid gap-4">{children}</div>
+    </div>
+  );
+}
+
 function FlowStepCard({
   step,
   title,
@@ -360,6 +426,9 @@ function FlowStepCard({
   tone,
   statusLabel,
   action,
+  state,
+  icon,
+  isLast = false,
 }: {
   step: string;
   title: string;
@@ -368,28 +437,56 @@ function FlowStepCard({
   tone: Tone;
   statusLabel: string;
   action?: ReactNode;
+  state: 'completed' | 'current' | 'locked';
+  icon: ReactNode;
+  isLast?: boolean;
 }) {
   const tones: Record<Tone, string> = {
-    neutral: 'border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-3))]',
-    info: 'border-[rgb(var(--info))/16] bg-[rgb(var(--info))/6]',
-    success: 'border-[rgb(var(--success))/18] bg-[rgb(var(--success))/8]',
+    neutral: 'border-[rgb(var(--surface-border))]/85 bg-[rgb(var(--surface-3))]/76',
+    info: 'border-[rgb(var(--info))/18] bg-[rgb(var(--info))/7]',
+    success: 'border-[rgb(var(--success))/18] bg-[rgb(var(--success))/9]',
     warning: 'border-[rgb(var(--warning))/22] bg-[rgb(var(--warning))/8]',
     danger: 'border-[rgb(var(--danger))/22] bg-[rgb(var(--danger))/8]',
     accent: 'border-[rgb(var(--accent-solid))/18] bg-[rgb(var(--accent-solid))/8]',
   };
 
   return (
-    <div className={cn('rounded-[22px] border p-4 shadow-[var(--shadow-soft)]', tones[tone])}>
-      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-        <div className="min-w-0">
-          <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-[rgb(var(--text-muted))]">{step}</p>
-          <p className="mt-2 text-sm font-semibold text-[rgb(var(--text-primary))]">{title}</p>
-          <p className="mt-1 text-sm leading-6 text-[rgb(var(--text-secondary))]">{detail}</p>
-        </div>
-        <AdminBadge tone={tone}>{statusLabel}</AdminBadge>
+    <div className="relative pl-16">
+      {!isLast ? <div className="absolute left-[27px] top-12 bottom-[-18px] w-px bg-[rgb(var(--surface-border))]/70" /> : null}
+      <div
+        className={cn(
+          'absolute left-0 top-1.5 flex h-14 w-14 items-center justify-center rounded-[22px] border shadow-[0_10px_26px_rgba(15,23,42,0.08)]',
+          tones[tone],
+          state === 'current' && 'ring-4 ring-[rgb(var(--accent-strong))]/10',
+          state === 'locked' && 'opacity-72',
+        )}
+      >
+        <span className={cn(
+          'text-[rgb(var(--text-primary))]',
+          state === 'locked' && 'text-[rgb(var(--text-muted))]',
+        )}
+        >
+          {icon}
+        </span>
       </div>
-      {helper ? <p className="mt-3 text-xs leading-5 text-[rgb(var(--text-secondary))]">{helper}</p> : null}
-      {action ? <div className="mt-4 flex flex-wrap gap-2">{action}</div> : null}
+      <div
+        className={cn(
+          'rounded-[26px] border p-4 shadow-[0_14px_34px_rgba(15,23,42,0.06)]',
+          tones[tone],
+          state === 'current' && 'border-[rgb(var(--accent-strong))]/28 bg-[rgb(var(--surface-2))]',
+        )}
+      >
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div className="min-w-0">
+            <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[rgb(var(--text-muted))]">{step}</p>
+            <p className="mt-2 text-base font-semibold tracking-[-0.02em] text-[rgb(var(--text-primary))]">{title}</p>
+            <p className="mt-1.5 text-sm leading-6 text-[rgb(var(--text-secondary))]">{detail}</p>
+          </div>
+          <AdminBadge tone={tone}>{statusLabel}</AdminBadge>
+        </div>
+        {helper ? <p className="mt-3 text-xs leading-5 text-[rgb(var(--text-secondary))]">{helper}</p> : null}
+        {action ? <div className="mt-4 flex flex-wrap gap-2">{action}</div> : null}
+      </div>
     </div>
   );
 }
@@ -418,7 +515,6 @@ export default function LeadDetailPage() {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ tone: Tone; message: string } | null>(null);
-  const [selectOpen, setSelectOpen] = useState(false);
   const [receiveOpen, setReceiveOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [assignOpen, setAssignOpen] = useState(false);
@@ -432,17 +528,17 @@ export default function LeadDetailPage() {
     pickupDate: '',
     returnDate: '',
     appointmentIntent: 'FITTING',
-    quotedPrice: '',
+    quotedPrice: null as number | null,
     notes: '',
   });
   const [receiveDraft, setReceiveDraft] = useState({
-    amount: '',
+    amount: null as number | null,
     paymentMethod: 'CASH' as PaymentMethod,
     description: '',
   });
   const [editDraft, setEditDraft] = useState({
     notes: '',
-    quotedPrice: '',
+    quotedPrice: null as number | null,
   });
   const [assignDraft, setAssignDraft] = useState('');
   const canViewAuditLogs = can(userRole, 'view_audit_logs');
@@ -484,11 +580,13 @@ export default function LeadDetailPage() {
               id: row.id,
               name: row.name,
               price: Number(row.price ?? 0),
+              imageUrl: row.image ?? parseImageList(row.imageUrls)[0] ?? undefined,
               variants: (row.variants ?? []).map((variant: any) => ({
                 id: variant.id,
                 name: variant.name,
                 size: variant.size,
                 color: variant.color,
+                imageUrls: parseImageList(variant.imageUrls),
               })),
             }))
           : [],
@@ -543,17 +641,17 @@ export default function LeadDetailPage() {
       pickupDate: toDateTimeLocal(lead.pickupDate),
       returnDate: toDateTimeLocal(lead.returnDate),
       appointmentIntent: lead.appointmentIntent.toUpperCase(),
-      quotedPrice: lead.quotedPrice ? String(lead.quotedPrice) : '',
+      quotedPrice: lead.quotedPrice || null,
       notes: lead.notes ?? '',
     });
     setReceiveDraft({
-      amount: String(lead.depositAmountRequired || lead.depositAmountPaid || ''),
+      amount: lead.depositAmountRequired || lead.depositAmountPaid || null,
       paymentMethod: 'CASH',
       description: lead.productName ? `${lead.productName}` : '',
     });
     setEditDraft({
       notes: lead.notes ?? '',
-      quotedPrice: lead.quotedPrice ? String(lead.quotedPrice) : '',
+      quotedPrice: lead.quotedPrice || null,
     });
     setAssignDraft(lead.ownerId ?? '');
   }, [lead]);
@@ -565,6 +663,37 @@ export default function LeadDetailPage() {
   const selectedVariant = useMemo(
     () => selectedProduct?.variants.find((variant) => variant.id === selectDraft.variantId),
     [selectedProduct, selectDraft.variantId],
+  );
+  const colorOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          (selectedProduct?.variants ?? [])
+            .map((variant) => variant.color?.trim())
+            .filter(Boolean) as string[],
+        ),
+      ).map((value) => ({ value })),
+    [selectedProduct],
+  );
+  const sizeOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          (selectedProduct?.variants ?? [])
+            .map((variant) => variant.size?.trim())
+            .filter(Boolean) as string[],
+        ),
+      ).map((value) => ({ value })),
+    [selectedProduct],
+  );
+  const matchingVariants = useMemo(
+    () =>
+      (selectedProduct?.variants ?? []).filter((variant) => {
+        const colorMatches = !selectDraft.color || lower(variant.color) === lower(selectDraft.color);
+        const sizeMatches = !selectDraft.size || lower(variant.size) === lower(selectDraft.size);
+        return colorMatches && sizeMatches;
+      }),
+    [selectedProduct, selectDraft.color, selectDraft.size],
   );
   const filteredInventoryItems = useMemo(
     () =>
@@ -581,6 +710,21 @@ export default function LeadDetailPage() {
     : !selectDraft.pickupDate || !selectDraft.returnDate
       ? t('leadFlow.validation.rentalDatesRequired')
       : null;
+
+  useEffect(() => {
+    if (!selectedProduct) return;
+    const currentVariantStillValid = selectedProduct.variants.some((variant) => variant.id === selectDraft.variantId);
+    const resolvedVariantId =
+      matchingVariants.length === 1
+        ? matchingVariants[0].id
+        : currentVariantStillValid
+          ? selectDraft.variantId
+          : '';
+
+    if (resolvedVariantId !== selectDraft.variantId) {
+      setSelectDraft((current) => ({ ...current, variantId: resolvedVariantId, inventoryItemId: '' }));
+    }
+  }, [matchingVariants, selectedProduct, selectDraft.variantId]);
 
   const timelineItems = useMemo(() => {
     if (auditRows.length) {
@@ -639,10 +783,9 @@ export default function LeadDetailPage() {
           pickupDate: toIsoOrUndefined(selectDraft.pickupDate),
           returnDate: toIsoOrUndefined(selectDraft.returnDate),
           appointmentIntent: selectDraft.appointmentIntent,
-          quotedPrice: selectDraft.quotedPrice ? Number(selectDraft.quotedPrice) : undefined,
+          quotedPrice: selectDraft.quotedPrice ?? undefined,
           notes: selectDraft.notes || undefined,
         });
-        setSelectOpen(false);
       },
       t('lead.feedback.productSelected'),
     );
@@ -718,7 +861,7 @@ export default function LeadDetailPage() {
       async () => {
         await leadsApi.update(lead.id, {
           notes: editDraft.notes,
-          quotedPrice: editDraft.quotedPrice ? Number(editDraft.quotedPrice) : undefined,
+          quotedPrice: editDraft.quotedPrice ?? undefined,
         });
         setEditOpen(false);
       },
@@ -834,6 +977,12 @@ export default function LeadDetailPage() {
   const depositWindow = minutesUntil(lead.depositDeadlineAt);
   const depositDeadlineState =
     depositWindow === null ? t('leadOps.notSet') : depositWindow < 0 ? t('lead.deposit.expired') : depositDeadlineLabel;
+  const availableInventoryCount = filteredInventoryItems.filter((item) => item.id !== lead.inventoryItemId).length + (lead.inventoryItemId ? 1 : 0);
+  const productCompletion = hasProductSelection(lead);
+  const depositCompletion = hasRequestedDeposit(lead);
+  const depositReceived = hasReceivedDeposit(lead);
+  const appointmentCompletion = hasAppointment(lead);
+  const bookingCompletion = hasBooking(lead);
 
   return (
     <>
@@ -877,136 +1026,77 @@ export default function LeadDetailPage() {
           rail={(
             <>
               <RailSection title={t('lead.panels.quickActions')}>
-                <AdminButton className="w-full" onClick={callCustomer} loading={busyAction === `contact-${lead.id}`}>
-                  {t('lead.actions.call_customer')}
-                </AdminButton>
-                <AdminButton variant="secondary" className="w-full" onClick={sendZalo} loading={busyAction === `zalo-${lead.id}`}>
-                  {t('lead.actions.send_zalo')}
-                </AdminButton>
-                <AdminButton variant="secondary" className="w-full" onClick={() => setEditOpen(true)}>
-                  {t('lead.actions.edit_lead')}
-                </AdminButton>
-                <AdminButton variant="secondary" className="w-full" onClick={() => setAssignOpen(true)}>
-                  {t('lead.actions.assign_staff')}
-                </AdminButton>
-                {canEditProduct(lead) ? (
+                <div className="space-y-2">
+                  <AdminButton className="w-full" onClick={callCustomer} loading={busyAction === `contact-${lead.id}`}>
+                    {t('lead.actions.call_customer')}
+                  </AdminButton>
+                  <AdminButton variant="secondary" className="w-full" onClick={sendZalo} loading={busyAction === `zalo-${lead.id}`}>
+                    {t('lead.actions.send_zalo')}
+                  </AdminButton>
+                  <AdminButton variant="secondary" className="w-full" onClick={() => setEditOpen(true)}>
+                    {t('lead.actions.edit_lead')}
+                  </AdminButton>
+                  <AdminButton variant="secondary" className="w-full" onClick={() => setAssignOpen(true)}>
+                    {t('lead.actions.assign_staff')}
+                  </AdminButton>
+                  <AdminButton
+                    className="w-full"
+                    onClick={requestDeposit}
+                    loading={busyAction === `request-deposit-${lead.id}`}
+                    disabled={!canRequestDeposit(lead, userRole)}
+                  >
+                    {t('lead.actions.request_deposit')}
+                  </AdminButton>
                   <AdminButton
                     variant="secondary"
                     className="w-full"
-                    onClick={() => setSelectOpen(true)}
+                    onClick={() => setReceiveOpen(true)}
+                    disabled={!canReceiveDeposit(lead, userRole)}
                   >
-                    {t('lead.actions.select_product')}
+                    {t('lead.actions.confirm_deposit')}
                   </AdminButton>
-                ) : null}
-                <AdminButton
-                  className="w-full"
-                  onClick={requestDeposit}
-                  loading={busyAction === `request-deposit-${lead.id}`}
-                  disabled={!canRequestDeposit(lead, userRole)}
-                >
-                  {t('lead.actions.request_deposit')}
-                </AdminButton>
-                <AdminButton
-                  className="w-full"
-                  onClick={() => setReceiveOpen(true)}
-                  disabled={!canReceiveDeposit(lead, userRole)}
-                >
-                  {t('lead.actions.confirm_deposit')}
-                </AdminButton>
-                {lead.bookingId ? (
-                  <Link className="button-primary w-full text-center" href={`/admin/bookings/${lead.bookingId}`}>
-                    {t('lead.actions.open_booking')}
-                  </Link>
-                ) : canCreateBookingOverride(lead) ? (
-                  <AdminButton
-                    className="w-full"
-                    onClick={createBooking}
-                    loading={busyAction === `create-booking-${lead.id}`}
-                  >
-                    {t('lead.actions.create_booking')}
-                  </AdminButton>
-                ) : lead.appointmentId ? (
-                  <AdminButton
-                    className="w-full"
-                    onClick={completeAppointment}
-                    loading={busyAction === `complete-appointment-${lead.appointmentId}`}
-                    disabled={!canCompleteAppointment(lead)}
-                  >
-                    {t('lead.actions.complete_appointment')}
-                  </AdminButton>
-                ) : (
-                  <AdminButton
-                    className="w-full"
-                    onClick={recreateAppointment}
-                    loading={busyAction === `create-appointment-${lead.id}`}
-                    disabled={!appointmentIsRecoverable(lead)}
-                  >
-                    {lead.appointmentId ? t('lead.actions.open_appointment') : t('lead.actions.recreate_appointment')}
-                  </AdminButton>
-                )}
-                <AdminButton
-                  variant="secondary"
-                  className="w-full text-[rgb(var(--danger))]"
-                  onClick={() => setConfirmAction({ kind: 'cancel' })}
-                  disabled={lead.status === 'cancelled' || hasBooking(lead)}
-                >
-                  {t('lead.actions.cancel_lead')}
-                </AdminButton>
-                <AdminButton
-                  variant="secondary"
-                  className="w-full text-[rgb(var(--danger))]"
-                  onClick={() => setConfirmAction({ kind: 'archive' })}
-                >
-                  {t('lead.actions.archive_lead')}
-                </AdminButton>
-              </RailSection>
-
-              <RailSection title={t('lead.panels.deposit')}>
-                <KeyValueList
-                  items={[
-                    { label: t('leadFlow.summary.depositStatus'), value: t(`leadFlow.depositState.${lead.depositStatus}`) },
-                    { label: t('leadFlow.summary.holdStatus'), value: t(`leadFlow.hold.${lead.productHoldStatus}`) },
-                    { label: t('lead.deposit.deadline'), value: depositDeadlineState },
-                    { label: t('leadFlow.summary.depositAmount'), value: currency.format(lead.depositAmountRequired || 0) },
-                    { label: t('leadFlow.summary.depositPaid'), value: currency.format(lead.depositAmountPaid || 0) },
-                  ]}
-                />
-              </RailSection>
-
-              <RailSection title={t('lead.panels.appointment')}>
-                <KeyValueList
-                  items={[
-                    { label: t('leadFlow.summary.appointmentType'), value: t(`leadFlow.intent.${lead.appointmentIntent}`) },
-                    { label: t('leadFlow.summary.appointmentStatus'), value: lead.appointmentStatus ? t(`appointment.status.${lead.appointmentStatus}`) : t('lead.empty.appointment') },
-                    { label: t('leadFlow.summary.appointmentTime'), value: lead.appointmentTime ? formatDateTime(lead.appointmentTime) : '-' },
-                  ]}
-                />
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <Link className="button-secondary text-center" href="/admin/appointments">
-                    {t('lead.actions.open_appointment')}
-                  </Link>
-                  {appointmentIsRecoverable(lead) ? (
-                    <AdminButton
-                      onClick={recreateAppointment}
-                      loading={busyAction === `create-appointment-${lead.id}`}
-                    >
-                      {t('lead.actions.recreate_appointment')}
+                  {lead.bookingId ? (
+                    <Link className="button-primary w-full text-center" href={`/admin/bookings/${lead.bookingId}`}>
+                      {t('lead.actions.open_booking')}
+                    </Link>
+                  ) : canCreateBookingOverride(lead) ? (
+                    <AdminButton className="w-full" onClick={createBooking} loading={busyAction === `create-booking-${lead.id}`}>
+                      {t('lead.actions.create_booking')}
                     </AdminButton>
                   ) : null}
+                  <AdminButton
+                    variant="danger"
+                    className="w-full"
+                    onClick={() => setConfirmAction({ kind: 'cancel' })}
+                    disabled={lead.status === 'cancelled' || hasBooking(lead)}
+                  >
+                    {t('lead.actions.cancel_lead')}
+                  </AdminButton>
+                  <AdminButton variant="danger" className="w-full" onClick={() => setConfirmAction({ kind: 'archive' })}>
+                    {t('lead.actions.archive_lead')}
+                  </AdminButton>
+                </div>
+              </RailSection>
+
+              <RailSection title={t('lead.panels.operationalSummary')}>
+                <div className="space-y-3">
+                  <DetailField label={t('lead.next_step.call_customer')} value={t(nextStepKey(lead))} helper={t('leadOps.detail.description')} />
+                  <DetailField label={t('leadFlow.summary.holdStatus')} value={t(`leadFlow.hold.${lead.productHoldStatus}`)} />
+                  <DetailField label={t('leadFlow.summary.depositStatus')} value={t(`leadFlow.depositState.${lead.depositStatus}`)} />
                 </div>
               </RailSection>
             </>
           )}
         >
           <SectionCard title={t('lead.detail')} description={t('leadOps.detail.description')}>
-            <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
+            <div className="grid gap-6 xl:grid-cols-[minmax(0,1.06fr)_minmax(320px,0.94fr)]">
               <div className="space-y-6">
-                <div className="rounded-[28px] border border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-2))] p-6 shadow-[var(--shadow-panel)]">
+                <div className="rounded-[30px] border border-[rgb(var(--surface-border))]/80 bg-[rgb(var(--surface-2))]/96 p-6 shadow-[0_24px_54px_rgba(15,23,42,0.07)]">
                   <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                    <div>
-                      <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">{t('lead.flow.customer')}</p>
-                      <h2 className="mt-2 text-[34px] font-semibold tracking-[-0.04em] text-[rgb(var(--text-primary))]">{lead.customerName}</h2>
-                      <p className="mt-2 text-sm text-[rgb(var(--text-secondary))]">{lead.phone} / {lead.email}</p>
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[rgb(var(--text-muted))]">{t('lead.flow.customer')}</p>
+                      <h2 className="mt-2 text-[36px] font-semibold tracking-[-0.045em] text-[rgb(var(--text-primary))]">{lead.customerName}</h2>
+                      <p className="mt-2 text-sm leading-6 text-[rgb(var(--text-secondary))]">{lead.phone} / {lead.email}</p>
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <StatusBadge value={lead.status} tone={statusTone(lead)} />
@@ -1016,110 +1106,220 @@ export default function LeadDetailPage() {
                   </div>
                 </div>
 
-                <SectionCard title={t('lead.customerProfile')} description={t('lead.customerProfileDesc')} className="shadow-none">
-                  <KeyValueList
-                    items={[
-                      { label: t('lead.customer'), value: lead.customerName },
-                      { label: t('lead.phone'), value: lead.phone },
-                      { label: t('lead.email'), value: lead.email },
-                      { label: t('lead.source'), value: t(`leadOps.source.${lead.source}`) },
-                      { label: t('lead.salesOwner'), value: lead.ownerName },
-                    ]}
-                  />
-                </SectionCard>
-
-                <SectionCard
-                  title={t('lead.panels.productRequest')}
-                  description={isManualLead(lead) ? t('lead.manual.description') : t('leadFlow.stepDesc.product')}
-                  className="shadow-none"
-                >
-                  {!hasProductSelection(lead) ? (
-                    <div className="rounded-[24px] border border-dashed border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-3))]/70 p-5">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-sm font-semibold text-[rgb(var(--text-primary))]">{t('lead.no_product.title')}</p>
-                        <AdminBadge tone="warning">{t('lead.manual.badge')}</AdminBadge>
-                      </div>
-                      <p className="mt-2 text-sm leading-6 text-[rgb(var(--text-secondary))]">{t('lead.manual.description')}</p>
-                      {canEditProduct(lead) ? (
-                        <div className="mt-4">
-                          <AdminButton onClick={() => setSelectOpen(true)}>{t('lead.actions.select_product')}</AdminButton>
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : (
-                    <KeyValueList
-                      items={[
-                        { label: t('lead.flow.product'), value: productDetail },
-                        { label: t('leadFlow.form.size'), value: lead.requestedSize || t('leadFlow.form.optionalPlaceholder') },
-                        { label: t('leadFlow.form.color'), value: lead.requestedColor || t('leadFlow.form.optionalPlaceholder') },
-                        { label: t('leadFlow.form.inventoryItem'), value: lead.inventoryItemLabel ?? t('leadFlow.form.autoAssign') },
-                        { label: t('leadFlow.summary.pickupDate'), value: lead.pickupDate ? formatDateTime(lead.pickupDate) : '-' },
-                        { label: t('leadFlow.summary.returnDate'), value: lead.returnDate ? formatDateTime(lead.returnDate) : '-' },
-                        { label: t('lead.panels.rentalIntent'), value: t(`leadFlow.intent.${lead.appointmentIntent}`) },
-                        { label: t('lead.budget'), value: lead.quotedPrice ? currency.format(lead.quotedPrice) : t('leadOps.notQuoted') },
-                      ]}
-                    />
-                  )}
-                </SectionCard>
-
-                <SectionCard title={t('lead.notes')} description={t('leadOps.detail.noNotes')} className="shadow-none">
-                  <div className="rounded-[22px] border border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-3))] p-5 text-sm leading-6 text-[rgb(var(--text-secondary))]">
-                    {lead.notes || t('leadOps.detail.noNotes')}
+                <FormBlock title={t('lead.customerProfile')} description={t('lead.customerProfileDesc')}>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <DetailField label={t('lead.customer')} value={lead.customerName} helper={t('lead.customerProfileDesc')} />
+                    <DetailField label={t('lead.phone')} value={lead.phone} helper={t('lead.actions.call_customer')} />
+                    <DetailField label={t('lead.email')} value={lead.email} helper="Primary follow-up inbox" />
+                    <DetailField label={t('lead.source')} value={t(`leadOps.source.${lead.source}`)} helper="Acquisition channel" />
                   </div>
-                </SectionCard>
+                </FormBlock>
+
+                <FormBlock title={t('lead.panels.productRequest')} description={isManualLead(lead) ? t('lead.manual.description') : t('leadFlow.stepDesc.product')}>
+                  <ProductCardSelect
+                    products={products}
+                    inventoryItems={inventoryItems}
+                    selectedProductId={selectDraft.productId}
+                    selectedVariantId={selectDraft.variantId}
+                    selectedColor={selectDraft.color}
+                    selectedSize={selectDraft.size}
+                    onSelectProduct={(productId) => setSelectDraft((current) => ({
+                      ...current,
+                      productId,
+                      variantId: '',
+                      inventoryItemId: '',
+                      size: '',
+                      color: '',
+                    }))}
+                    disabled={!canEditProduct(lead)}
+                  />
+
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    <ColorPicker
+                      label={t('leadFlow.form.color')}
+                      helperText="Circle swatches keep color choice scannable for operators."
+                      options={colorOptions}
+                      value={selectDraft.color}
+                      onChange={(value) => setSelectDraft((current) => ({ ...current, color: value, inventoryItemId: '' }))}
+                    />
+                    <SizeSelector
+                      label={t('leadFlow.form.size')}
+                      helperText="Size pills reflect the available variant set for the selected product."
+                      options={sizeOptions}
+                      value={selectDraft.size}
+                      onChange={(value) => setSelectDraft((current) => ({ ...current, size: value, inventoryItemId: '' }))}
+                    />
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
+                      {t('leadFlow.form.inventoryItem')}
+                      <AdminSelect value={selectDraft.inventoryItemId} onChange={(event) => setSelectDraft((current) => ({ ...current, inventoryItemId: event.target.value }))}>
+                        <option value="">{t('leadFlow.form.autoAssign')}</option>
+                        {filteredInventoryItems.map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.serialNumber}
+                          </option>
+                        ))}
+                      </AdminSelect>
+                      <p className="text-xs leading-5 text-[rgb(var(--text-muted))]">
+                        {availableInventoryCount > 0 ? `${availableInventoryCount} item khả dụng trong kho.` : 'Chưa có item khả dụng, vẫn có thể lưu nhu cầu để xử lý sau.'}
+                      </p>
+                    </label>
+
+                    <DetailField
+                      label="Matched variant"
+                      value={selectedVariant?.name ?? t('leadFlow.form.optionalPlaceholder')}
+                      helper={matchingVariants.length > 1 ? 'Nhiều biến thể đang khớp. Chọn thêm màu hoặc size để khóa đúng variant.' : 'Variant được tự động ghép khi màu và size đủ rõ.'}
+                    />
+                  </div>
+
+                  {canEditProduct(lead) ? (
+                    <div className="flex justify-end">
+                      <AdminButton onClick={selectProduct} loading={busyAction === `select-product-${lead.id}`} disabled={Boolean(selectProductValidationMessage)}>
+                        {t('leadFlow.actions.saveProduct')}
+                      </AdminButton>
+                    </div>
+                  ) : null}
+                  {selectProductValidationMessage ? <InlineAlert tone="warning">{selectProductValidationMessage}</InlineAlert> : null}
+                </FormBlock>
+
+                <FormBlock title="Rental info" description="Capture the rental window, commercial amount, and appointment intent in one place.">
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
+                      {t('leadFlow.form.pickupDate')}
+                      <AdminInput
+                        type="datetime-local"
+                        value={selectDraft.pickupDate}
+                        onChange={(event) => setSelectDraft((current) => ({ ...current, pickupDate: event.target.value }))}
+                        disabled={!canEditProduct(lead)}
+                      />
+                      <p className="text-xs leading-5 text-[rgb(var(--text-muted))]">{t('lead.no_pickup_date.description')}</p>
+                    </label>
+                    <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
+                      {t('leadFlow.form.returnDate')}
+                      <AdminInput
+                        type="datetime-local"
+                        value={selectDraft.returnDate}
+                        onChange={(event) => setSelectDraft((current) => ({ ...current, returnDate: event.target.value }))}
+                        disabled={!canEditProduct(lead)}
+                      />
+                      <p className="text-xs leading-5 text-[rgb(var(--text-muted))]">Return timing keeps deposit request and appointment planning aligned.</p>
+                    </label>
+                    <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
+                      {t('leadFlow.form.appointmentIntent')}
+                      <AdminSelect
+                        value={selectDraft.appointmentIntent}
+                        onChange={(event) => setSelectDraft((current) => ({ ...current, appointmentIntent: event.target.value }))}
+                      >
+                        <option value="FITTING">{t('leadFlow.intent.fitting')}</option>
+                        <option value="PICKUP">{t('leadFlow.intent.pickup')}</option>
+                        <option value="DELIVERY">{t('leadFlow.intent.delivery')}</option>
+                      </AdminSelect>
+                      <p className="text-xs leading-5 text-[rgb(var(--text-muted))]">Intent drives the appointment that will be created after deposit collection.</p>
+                    </label>
+                    <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
+                      {t('lead.budget')}
+                      <MoneyInput value={selectDraft.quotedPrice} onValueChange={(value) => setSelectDraft((current) => ({ ...current, quotedPrice: value }))} disabled={!canEditProduct(lead)} />
+                      <p className="text-xs leading-5 text-[rgb(var(--text-muted))]">Stored as a number, displayed as VND for cashier-grade clarity.</p>
+                    </label>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <DetailField label={t('lead.salesOwner')} value={lead.ownerName} helper="Accountability for follow-up and commercial decisions." />
+                    <DetailField label={t('lead.source')} value={t(`leadOps.source.${lead.source}`)} helper="Useful when triaging manual versus client-originated leads." />
+                  </div>
+
+                  <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
+                    {t('lead.notes')}
+                    <textarea
+                      className="field h-32 py-3"
+                      value={canEditProduct(lead) ? selectDraft.notes : lead.notes}
+                      onChange={(event) => setSelectDraft((current) => ({ ...current, notes: event.target.value }))}
+                      disabled={!canEditProduct(lead)}
+                    />
+                    <p className="text-xs leading-5 text-[rgb(var(--text-muted))]">Keep the note short, commercial, and legible for the next operator.</p>
+                  </label>
+                </FormBlock>
+
+                <FormBlock title={t('lead.panels.deposit')} description={t('leadOps.deposit.rule')}>
+                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                    <DetailField label={t('leadFlow.summary.depositStatus')} value={t(`leadFlow.depositState.${lead.depositStatus}`)} helper="Commercial state of the requested deposit." />
+                    <DetailField label={t('lead.deposit.deadline')} value={depositDeadlineState} helper={requestDepositHelper} />
+                    <DetailField label={t('leadFlow.summary.holdStatus')} value={t(`leadFlow.hold.${lead.productHoldStatus}`)} helper="Inventory only becomes reserved after payment is received." />
+                    <DetailField label={t('leadFlow.summary.depositAmount')} value={currency.format(lead.depositAmountRequired || 0)} helper="Expected collection amount for this lead." />
+                    <DetailField label={t('leadFlow.summary.depositPaid')} value={currency.format(lead.depositAmountPaid || 0)} helper="Amount already collected and logged." />
+                    <DetailField label="Tổng thương mại" value={lead.quotedPrice ? currency.format(lead.quotedPrice) : t('leadOps.notQuoted')} helper="Mốc giá nội bộ trước khi tạo đơn thuê." />
+                  </div>
+                  {lead.status === 'deposit_expired' ? <InlineAlert tone="warning">{t('lead.deposit.expired')}</InlineAlert> : null}
+                  <div className="flex flex-wrap gap-2">
+                    <AdminButton onClick={requestDeposit} loading={busyAction === `request-deposit-${lead.id}`} disabled={!canRequestDeposit(lead, userRole)}>
+                      {t('lead.actions.request_deposit')}
+                    </AdminButton>
+                    <AdminButton variant="secondary" onClick={() => setReceiveOpen(true)} disabled={!canReceiveDeposit(lead, userRole)}>
+                      {t('lead.actions.confirm_deposit')}
+                    </AdminButton>
+                  </div>
+                </FormBlock>
+
+                <FormBlock title={t('lead.panels.appointment')} description={lead.appointmentId ? t('lead.appointment.auto_created') : t('lead.appointment.waiting_completion')}>
+                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                    <DetailField label={t('leadFlow.summary.appointmentType')} value={t(`leadFlow.intent.${lead.appointmentIntent}`)} helper="Intent selected during product confirmation." />
+                    <DetailField label={t('leadFlow.summary.appointmentStatus')} value={lead.appointmentStatus ? t(`appointment.status.${lead.appointmentStatus}`) : t('lead.empty.appointment')} helper="Current service readiness." />
+                    <DetailField label={t('leadFlow.summary.appointmentTime')} value={lead.appointmentTime ? formatDateTime(lead.appointmentTime) : '-'} helper="Scheduled time or the next required action." />
+                  </div>
+                  {appointmentIsRecoverable(lead) ? <InlineAlert tone="warning">{t('lead.appointment.missing_after_deposit')}</InlineAlert> : null}
+                  <div className="flex flex-wrap gap-2">
+                    <Link className="button-secondary text-center" href="/admin/appointments">
+                      {t('lead.actions.open_appointment')}
+                    </Link>
+                    {appointmentIsRecoverable(lead) ? (
+                      <AdminButton onClick={recreateAppointment} loading={busyAction === `create-appointment-${lead.id}`}>
+                        {t('lead.actions.recreate_appointment')}
+                      </AdminButton>
+                    ) : canCompleteAppointment(lead) ? (
+                      <AdminButton onClick={completeAppointment} loading={busyAction === `complete-appointment-${lead.appointmentId}`}>
+                        {t('lead.actions.complete_appointment')}
+                      </AdminButton>
+                    ) : null}
+                  </div>
+                </FormBlock>
               </div>
 
               <div className="space-y-4">
                 <SectionCard title={t('leadFlow.panel.title')} description={t('leadFlow.panel.description')} className="shadow-none">
-                  <div className="grid gap-3">
+                  <div className="space-y-4">
                     <FlowStepCard
                       step={t('leadFlow.steps.product')}
-                      title={hasProductSelection(lead) ? productDetail : t('lead.no_product.title')}
+                      title={productCompletion ? productDetail : t('lead.no_product.title')}
                       detail={productStepDetail}
-                      helper={!hasProductSelection(lead)
-                        ? t('lead.manual.description')
-                        : !hasRentalRequestContext(lead)
-                          ? t('lead.no_pickup_date.description')
-                          : t('leadFlow.stepDesc.product')}
-                      tone={hasProductSelection(lead) ? 'success' : canEditProduct(lead) ? 'warning' : 'neutral'}
-                      statusLabel={hasProductSelection(lead) ? t('lead.flow.complete') : t('lead.flow.blocked')}
-                      action={canEditProduct(lead) ? (
-                        <AdminButton variant="secondary" onClick={() => setSelectOpen(true)}>
-                          {t('lead.actions.select_product')}
-                        </AdminButton>
-                      ) : undefined}
+                      helper={!productCompletion ? t('lead.manual.description') : t('leadFlow.stepDesc.product')}
+                      tone={productCompletion ? 'success' : canEditProduct(lead) ? 'warning' : 'neutral'}
+                      statusLabel={productCompletion ? t('lead.flow.complete') : canEditProduct(lead) ? 'CURRENT' : t('lead.flow.blocked')}
+                      state={productCompletion ? 'completed' : canEditProduct(lead) ? 'current' : 'locked'}
+                      icon={<BoxIcon />}
                     />
 
                     <FlowStepCard
                       step={t('leadFlow.steps.requestDeposit')}
-                      title={hasRequestedDeposit(lead) ? t(`lead.status.${lead.status}`) : t('lead.deposit.missing')}
-                      detail={hasRequestedDeposit(lead) ? depositDeadlineLabel : t('lead.deposit.reserve_pending')}
+                      title={depositCompletion ? t(`lead.status.${lead.status}`) : t('lead.deposit.missing')}
+                      detail={depositCompletion ? depositDeadlineLabel : t('lead.deposit.reserve_pending')}
                       helper={requestDepositHelper}
-                      tone={lead.status === 'deposit_expired' ? 'danger' : hasRequestedDeposit(lead) ? 'success' : canRequestDeposit(lead, userRole) || hasProductSelection(lead) ? 'warning' : 'neutral'}
-                      statusLabel={hasRequestedDeposit(lead) ? t('lead.flow.complete') : t('lead.flow.pending')}
-                      action={(
-                        <AdminButton onClick={requestDeposit} loading={busyAction === `request-deposit-${lead.id}`} disabled={!canRequestDeposit(lead, userRole)}>
-                          {t('lead.actions.request_deposit')}
-                        </AdminButton>
-                      )}
+                      tone={lead.status === 'deposit_expired' ? 'danger' : depositCompletion ? 'success' : productCompletion ? 'warning' : 'neutral'}
+                      statusLabel={depositCompletion ? t('lead.flow.complete') : canRequestDeposit(lead, userRole) ? 'CURRENT' : t('lead.flow.blocked')}
+                      state={depositCompletion ? 'completed' : canRequestDeposit(lead, userRole) ? 'current' : 'locked'}
+                      icon={<WalletIcon />}
                     />
 
                     <FlowStepCard
                       step={t('leadFlow.steps.receiveDeposit')}
-                      title={hasReceivedDeposit(lead) ? t('lead.deposit.reserved') : t('lead.actions.confirm_deposit')}
-                      detail={hasReceivedDeposit(lead) ? currency.format(lead.depositAmountPaid || 0) : t('lead.deposit.reserve_pending')}
-                      helper={hasReceivedDeposit(lead)
-                        ? t('lead.appointment.auto_created')
-                        : !canCollectDeposit
-                          ? t('common.notAllowed')
-                          : t('leadFlow.helper.autoReserve')}
-                      tone={hasReceivedDeposit(lead) ? 'success' : canReceiveDeposit(lead, userRole) ? 'info' : 'neutral'}
-                      statusLabel={hasReceivedDeposit(lead) ? t('lead.flow.complete') : t('lead.flow.pending')}
-                      action={(
-                        <AdminButton onClick={() => setReceiveOpen(true)} disabled={!canReceiveDeposit(lead, userRole)}>
-                          {t('lead.actions.confirm_deposit')}
-                        </AdminButton>
-                      )}
+                      title={depositReceived ? t('lead.deposit.reserved') : t('lead.actions.confirm_deposit')}
+                      detail={depositReceived ? currency.format(lead.depositAmountPaid || 0) : t('lead.deposit.reserve_pending')}
+                      helper={depositReceived ? t('lead.appointment.auto_created') : t('leadFlow.helper.autoReserve')}
+                      tone={depositReceived ? 'success' : canReceiveDeposit(lead, userRole) ? 'info' : 'neutral'}
+                      statusLabel={depositReceived ? t('lead.flow.complete') : canReceiveDeposit(lead, userRole) ? 'CURRENT' : t('lead.flow.blocked')}
+                      state={depositReceived ? 'completed' : canReceiveDeposit(lead, userRole) ? 'current' : 'locked'}
+                      icon={<DotIcon />}
                     />
 
                     <FlowStepCard
@@ -1128,29 +1328,9 @@ export default function LeadDetailPage() {
                       detail={lead.appointmentTime ? formatDateTime(lead.appointmentTime) : hasReceivedDeposit(lead) ? t('lead.appointment.missing_after_deposit') : t('lead.appointment.waiting_completion')}
                       helper={lead.appointmentId ? t('leadFlow.next.completeAppointment') : t('leadFlow.helper.autoAppointment')}
                       tone={lead.appointmentId ? 'success' : appointmentIsRecoverable(lead) ? 'warning' : 'neutral'}
-                      statusLabel={lead.appointmentId ? t('lead.flow.complete') : t('lead.flow.pending')}
-                      action={(
-                        <div className="flex flex-wrap gap-2">
-                          <Link className="button-secondary text-center" href="/admin/appointments">
-                            {t('lead.actions.open_appointment')}
-                          </Link>
-                          {appointmentIsRecoverable(lead) ? (
-                            <AdminButton
-                              onClick={recreateAppointment}
-                              loading={busyAction === `create-appointment-${lead.id}`}
-                            >
-                              {t('lead.actions.recreate_appointment')}
-                            </AdminButton>
-                          ) : canCompleteAppointment(lead) ? (
-                            <AdminButton
-                              onClick={completeAppointment}
-                              loading={busyAction === `complete-appointment-${lead.appointmentId}`}
-                            >
-                              {t('lead.actions.complete_appointment')}
-                            </AdminButton>
-                          ) : null}
-                        </div>
-                      )}
+                      statusLabel={lead.appointmentId ? t('lead.flow.complete') : appointmentIsRecoverable(lead) ? 'CURRENT' : t('lead.flow.blocked')}
+                      state={lead.appointmentId ? 'completed' : appointmentIsRecoverable(lead) ? 'current' : 'locked'}
+                      icon={<CalendarIcon />}
                     />
 
                     <FlowStepCard
@@ -1158,67 +1338,35 @@ export default function LeadDetailPage() {
                       title={lead.bookingId ?? (canCreateBookingOverride(lead) ? t('lead.booking.ready') : t('lead.empty.booking'))}
                       detail={lead.bookingStatus ? t(`booking.status.${lead.bookingStatus}`) : lead.appointmentStatus === 'completed' ? t('lead.booking.ready') : t('lead.appointment.waiting_completion')}
                       helper={hasBooking(lead) ? t('lead.booking.locked') : t('leadFlow.stepDesc.booking')}
-                      tone={hasBooking(lead) ? 'success' : canCreateBookingOverride(lead) ? 'info' : 'neutral'}
-                      statusLabel={hasBooking(lead) ? t('lead.flow.complete') : canCreateBookingOverride(lead) ? t('lead.flow.pending') : t('lead.flow.blocked')}
-                      action={hasBooking(lead) ? (
+                      tone={bookingCompletion ? 'success' : canCreateBookingOverride(lead) ? 'info' : 'neutral'}
+                      statusLabel={bookingCompletion ? t('lead.flow.complete') : canCreateBookingOverride(lead) ? 'CURRENT' : t('lead.flow.blocked')}
+                      state={bookingCompletion ? 'completed' : canCreateBookingOverride(lead) ? 'current' : 'locked'}
+                      icon={<CheckIcon />}
+                      isLast
+                      action={bookingCompletion ? (
                         <Link className="button-primary text-center" href={`/admin/bookings/${lead.bookingId}`}>
                           {t('lead.actions.open_booking')}
                         </Link>
-                      ) : (
-                        <AdminButton
-                          onClick={createBooking}
-                          loading={busyAction === `create-booking-${lead.id}`}
-                          disabled={!canCreateBookingOverride(lead)}
-                        >
+                      ) : canCreateBookingOverride(lead) ? (
+                        <AdminButton onClick={createBooking} loading={busyAction === `create-booking-${lead.id}`}>
                           {t('lead.actions.create_booking')}
                         </AdminButton>
-                      )}
+                      ) : undefined}
                     />
                   </div>
                 </SectionCard>
 
-                <SectionCard title={t('lead.panels.deposit')} description={t('leadOps.deposit.rule')} className="shadow-none">
-                  <KeyValueList
-                    items={[
-                      { label: t('leadFlow.summary.holdStatus'), value: t(`leadFlow.hold.${lead.productHoldStatus}`) },
-                      { label: t('leadFlow.summary.depositStatus'), value: t(`leadFlow.depositState.${lead.depositStatus}`) },
-                      { label: t('lead.deposit.deadline'), value: depositDeadlineLabel },
-                      { label: t('leadFlow.summary.depositAmount'), value: currency.format(lead.depositAmountRequired || 0) },
-                      { label: t('leadFlow.summary.depositPaid'), value: currency.format(lead.depositAmountPaid || 0) },
-                    ]}
-                  />
+                <SectionCard title={t('lead.panels.booking')} description={hasBooking(lead) ? t('lead.booking.locked') : t('lead.appointment.waiting_completion')} className="shadow-none">
+                  <div className="grid gap-3">
+                    <DetailField label={t('lead.flow.booking')} value={lead.bookingId ?? t('lead.empty.booking')} helper="Mã đơn thuê là điểm neo để chuyển sang thanh toán, bàn giao và nhận trả." />
+                    <DetailField label={t('common.status')} value={lead.bookingStatus ? t(`booking.status.${lead.bookingStatus}`) : '-'} helper="Trạng thái vòng đời sau khi lead đã chuyển thành đơn thuê." />
+                  </div>
                 </SectionCard>
 
-                <SectionCard
-                  title={t('lead.panels.appointment')}
-                  description={lead.appointmentId ? t('lead.appointment.auto_created') : t('lead.appointment.waiting_completion')}
-                  className="shadow-none"
-                >
-                  <KeyValueList
-                    items={[
-                      { label: t('leadFlow.summary.appointmentType'), value: t(`leadFlow.intent.${lead.appointmentIntent}`) },
-                      { label: t('leadFlow.summary.appointmentStatus'), value: lead.appointmentStatus ? t(`appointment.status.${lead.appointmentStatus}`) : t('lead.empty.appointment') },
-                      { label: t('leadFlow.summary.appointmentTime'), value: lead.appointmentTime ? formatDateTime(lead.appointmentTime) : '-' },
-                    ]}
-                  />
-                  {appointmentIsRecoverable(lead) ? (
-                    <div className="mt-4">
-                      <InlineAlert tone="warning">{t('lead.appointment.missing_after_deposit')}</InlineAlert>
-                    </div>
-                  ) : null}
-                </SectionCard>
-
-                <SectionCard
-                  title={t('lead.panels.booking')}
-                  description={hasBooking(lead) ? t('lead.booking.locked') : t('lead.appointment.waiting_completion')}
-                  className="shadow-none"
-                >
-                  <KeyValueList
-                    items={[
-                      { label: t('lead.flow.booking'), value: lead.bookingId ?? t('lead.empty.booking') },
-                      { label: t('common.status'), value: lead.bookingStatus ? t(`booking.status.${lead.bookingStatus}`) : '-' },
-                    ]}
-                  />
+                <SectionCard title={t('lead.notes')} description={lead.notes ? 'Operator note snapshot' : t('leadOps.detail.noNotes')} className="shadow-none">
+                  <div className="rounded-[24px] border border-[rgb(var(--surface-border))]/80 bg-[rgb(var(--surface-3))]/72 p-5 text-sm leading-6 text-[rgb(var(--text-secondary))]">
+                    {lead.notes || t('leadOps.detail.noNotes')}
+                  </div>
                 </SectionCard>
               </div>
             </div>
@@ -1231,117 +1379,6 @@ export default function LeadDetailPage() {
           </SectionCard>
         </WorkspaceLayout>
       </div>
-
-      <AdminModal
-        open={selectOpen}
-        title={t('lead.actions.select_product')}
-        onClose={() => setSelectOpen(false)}
-        size="lg"
-        footer={(
-          <>
-            <AdminButton variant="secondary" onClick={() => setSelectOpen(false)}>
-              {t('common.cancel')}
-            </AdminButton>
-            <AdminButton
-              onClick={selectProduct}
-              loading={busyAction === `select-product-${lead.id}`}
-              disabled={Boolean(selectProductValidationMessage)}
-            >
-              {t('leadFlow.actions.saveProduct')}
-            </AdminButton>
-          </>
-        )}
-      >
-        <div className="grid gap-4 md:grid-cols-2">
-          <label className="grid gap-1.5 text-sm font-semibold">
-            {t('leadFlow.form.product')}
-            <AdminSelect value={selectDraft.productId} onChange={(event) => setSelectDraft((current) => ({ ...current, productId: event.target.value, variantId: '', inventoryItemId: '' }))}>
-              <option value="">{t('leadFlow.form.selectPlaceholder')}</option>
-              {products.map((product) => (
-                <option key={product.id} value={product.id}>
-                  {product.name}
-                </option>
-              ))}
-            </AdminSelect>
-          </label>
-
-          <label className="grid gap-1.5 text-sm font-semibold">
-            {t('leadFlow.form.variant')}
-            <AdminSelect value={selectDraft.variantId} onChange={(event) => setSelectDraft((current) => ({ ...current, variantId: event.target.value, inventoryItemId: '' }))}>
-              <option value="">{t('leadFlow.form.optionalPlaceholder')}</option>
-              {(selectedProduct?.variants ?? []).map((variant) => (
-                <option key={variant.id} value={variant.id}>
-                  {variant.name}{variant.size ? ` / ${variant.size}` : ''}{variant.color ? ` / ${variant.color}` : ''}
-                </option>
-              ))}
-            </AdminSelect>
-          </label>
-
-          <label className="grid gap-1.5 text-sm font-semibold">
-            {t('leadFlow.form.size')}
-            <AdminInput
-              value={selectDraft.size}
-              onChange={(event) => setSelectDraft((current) => ({ ...current, size: event.target.value }))}
-              placeholder={selectedVariant?.size ?? t('leadFlow.form.optionalPlaceholder')}
-            />
-          </label>
-
-          <label className="grid gap-1.5 text-sm font-semibold">
-            {t('leadFlow.form.color')}
-            <AdminInput
-              value={selectDraft.color}
-              onChange={(event) => setSelectDraft((current) => ({ ...current, color: event.target.value }))}
-              placeholder={selectedVariant?.color ?? t('leadFlow.form.optionalPlaceholder')}
-            />
-          </label>
-
-          <label className="grid gap-1.5 text-sm font-semibold">
-            {t('leadFlow.form.inventoryItem')}
-            <AdminSelect value={selectDraft.inventoryItemId} onChange={(event) => setSelectDraft((current) => ({ ...current, inventoryItemId: event.target.value }))}>
-              <option value="">{t('leadFlow.form.autoAssign')}</option>
-              {filteredInventoryItems.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.serialNumber}
-                </option>
-              ))}
-            </AdminSelect>
-          </label>
-
-          <label className="grid gap-1.5 text-sm font-semibold">
-            {t('leadFlow.form.appointmentIntent')}
-            <AdminSelect value={selectDraft.appointmentIntent} onChange={(event) => setSelectDraft((current) => ({ ...current, appointmentIntent: event.target.value }))}>
-              <option value="FITTING">{t('leadFlow.intent.fitting')}</option>
-              <option value="PICKUP">{t('leadFlow.intent.pickup')}</option>
-              <option value="DELIVERY">{t('leadFlow.intent.delivery')}</option>
-            </AdminSelect>
-          </label>
-
-          <label className="grid gap-1.5 text-sm font-semibold">
-            {t('leadFlow.form.pickupDate')}
-            <AdminInput type="datetime-local" value={selectDraft.pickupDate} onChange={(event) => setSelectDraft((current) => ({ ...current, pickupDate: event.target.value }))} />
-          </label>
-
-          <label className="grid gap-1.5 text-sm font-semibold">
-            {t('leadFlow.form.returnDate')}
-            <AdminInput type="datetime-local" value={selectDraft.returnDate} onChange={(event) => setSelectDraft((current) => ({ ...current, returnDate: event.target.value }))} />
-          </label>
-
-          <label className="grid gap-1.5 text-sm font-semibold">
-            {t('leadFlow.form.quotedPrice')}
-            <AdminInput type="number" value={selectDraft.quotedPrice} onChange={(event) => setSelectDraft((current) => ({ ...current, quotedPrice: event.target.value }))} />
-          </label>
-
-          <label className="grid gap-1.5 text-sm font-semibold md:col-span-2">
-            {t('leadOps.form.notes')}
-            <textarea className="field h-28 py-3" value={selectDraft.notes} onChange={(event) => setSelectDraft((current) => ({ ...current, notes: event.target.value }))} />
-          </label>
-        </div>
-        {selectProductValidationMessage ? (
-          <div className="mt-4">
-            <InlineAlert tone="warning">{selectProductValidationMessage}</InlineAlert>
-          </div>
-        ) : null}
-      </AdminModal>
 
       <AdminModal
         open={receiveOpen}
@@ -1362,25 +1399,29 @@ export default function LeadDetailPage() {
           </>
         )}
       >
-        <div className="grid gap-4">
-          <label className="grid gap-1.5 text-sm font-semibold">
-            {t('leadFlow.form.depositAmount')}
-            <AdminInput type="number" value={receiveDraft.amount} onChange={(event) => setReceiveDraft((current) => ({ ...current, amount: event.target.value }))} />
-          </label>
-          <label className="grid gap-1.5 text-sm font-semibold">
-            {t('leadFlow.form.paymentMethod')}
-            <AdminSelect value={receiveDraft.paymentMethod} onChange={(event) => setReceiveDraft((current) => ({ ...current, paymentMethod: event.target.value as PaymentMethod }))}>
-              {PAYMENT_METHODS.map((method) => (
-                <option key={method} value={method}>
-                  {t(`payment.method.${lower(method)}`)}
-                </option>
-              ))}
-            </AdminSelect>
-          </label>
-          <label className="grid gap-1.5 text-sm font-semibold">
-            {t('leadFlow.form.paymentNote')}
-            <AdminInput value={receiveDraft.description} onChange={(event) => setReceiveDraft((current) => ({ ...current, description: event.target.value }))} />
-          </label>
+        <div className="grid gap-5">
+          <FormBlock title={t('lead.panels.deposit')} description="Record the exact cashier intake in VND and keep the audit trail legible.">
+            <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
+              {t('leadFlow.form.depositAmount')}
+              <MoneyInput value={receiveDraft.amount} onValueChange={(value) => setReceiveDraft((current) => ({ ...current, amount: value }))} />
+              <p className="text-xs leading-5 text-[rgb(var(--text-muted))]">This value is stored as a number and formatted only at the UI layer.</p>
+            </label>
+            <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
+              {t('leadFlow.form.paymentMethod')}
+              <AdminSelect value={receiveDraft.paymentMethod} onChange={(event) => setReceiveDraft((current) => ({ ...current, paymentMethod: event.target.value as PaymentMethod }))}>
+                {PAYMENT_METHODS.map((method) => (
+                  <option key={method} value={method}>
+                    {t(`payment.method.${lower(method)}`)}
+                  </option>
+                ))}
+              </AdminSelect>
+            </label>
+            <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
+              {t('leadFlow.form.paymentNote')}
+              <AdminInput value={receiveDraft.description} onChange={(event) => setReceiveDraft((current) => ({ ...current, description: event.target.value }))} />
+              <p className="text-xs leading-5 text-[rgb(var(--text-muted))]">Use a concise note: channel, cashier, or transaction reference.</p>
+            </label>
+          </FormBlock>
         </div>
       </AdminModal>
 
@@ -1399,15 +1440,19 @@ export default function LeadDetailPage() {
           </>
         )}
       >
-        <div className="grid gap-4">
-          <label className="grid gap-1.5 text-sm font-semibold">
-            {t('lead.budget')}
-            <AdminInput type="number" value={editDraft.quotedPrice} onChange={(event) => setEditDraft((current) => ({ ...current, quotedPrice: event.target.value }))} />
-          </label>
-          <label className="grid gap-1.5 text-sm font-semibold">
-            {t('lead.notes')}
-            <textarea className="field h-32 py-3" value={editDraft.notes} onChange={(event) => setEditDraft((current) => ({ ...current, notes: event.target.value }))} />
-          </label>
+        <div className="grid gap-5">
+          <FormBlock title="Commercial edit" description="Adjust the quoted amount and operator notes without changing workflow logic.">
+            <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
+              {t('lead.budget')}
+              <MoneyInput value={editDraft.quotedPrice} onValueChange={(value) => setEditDraft((current) => ({ ...current, quotedPrice: value }))} />
+              <p className="text-xs leading-5 text-[rgb(var(--text-muted))]">Displayed in VND, stored as a plain numeric amount.</p>
+            </label>
+            <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
+              {t('lead.notes')}
+              <textarea className="field h-32 py-3" value={editDraft.notes} onChange={(event) => setEditDraft((current) => ({ ...current, notes: event.target.value }))} />
+              <p className="text-xs leading-5 text-[rgb(var(--text-muted))]">Keep the note focused on what the next operator needs to know.</p>
+            </label>
+          </FormBlock>
         </div>
       </AdminModal>
 

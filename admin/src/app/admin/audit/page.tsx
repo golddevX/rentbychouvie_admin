@@ -19,6 +19,21 @@ import { useI18n } from '@/hooks/useI18n';
 
 const ENTITIES = ['all', 'Booking', 'Payment', 'InventoryItem', 'Rental', 'ReturnInspection', 'RentalOrder', 'Dispute', 'DisputeEvidence'];
 
+function entityLabel(value: string, t: (key: string) => string) {
+  const labels: Record<string, string> = {
+    all: t('audit.allEntities'),
+    Booking: t('nav.bookings'),
+    Payment: t('nav.payments'),
+    InventoryItem: t('nav.inventory'),
+    Rental: t('nav.bookings'),
+    ReturnInspection: t('nav.returnDesk'),
+    RentalOrder: t('nav.bookings'),
+    Dispute: t('nav.disputes'),
+    DisputeEvidence: t('nav.disputes'),
+  };
+  return labels[value] ?? value;
+}
+
 function normalizeAudit(row: any): AuditLog {
   return {
     id: row.id,
@@ -117,7 +132,7 @@ export default function AuditLogsPage() {
         eyebrow={t('audit.title')}
         title={t('nav.auditLogs')}
         subtitle={t('audit.subtitle')}
-        nextStep={active ? `${active.entity} ${active.entityId}` : t('audit.nextSelect')}
+        nextStep={active ? `${entityLabel(active.entity, t)} ${active.entityId}` : t('audit.nextSelect')}
         actions={
           <>
             <AdminButton variant="secondary" onClick={loadData} loading={loading}>{t('common.refresh')}</AdminButton>
@@ -142,7 +157,7 @@ export default function AuditLogsPage() {
           <div className="mb-4 grid gap-3 md:grid-cols-[1fr_220px]">
             <AdminInput placeholder={t('audit.searchPlaceholder')} value={query} onChange={(event) => setQuery(event.target.value)} />
             <AdminSelect value={entity} onChange={(event) => setEntity(event.target.value)}>
-              {ENTITIES.map((item) => <option key={item} value={item}>{item === 'all' ? t('audit.allEntities') : item}</option>)}
+              {ENTITIES.map((item) => <option key={item} value={item}>{entityLabel(item, t)}</option>)}
             </AdminSelect>
           </div>
           {loading ? (
@@ -155,7 +170,7 @@ export default function AuditLogsPage() {
                   <span className="font-semibold text-[rgb(var(--text-primary))]">{row.action.replace(/_/g, ' ')}</span>
                   <span className="mt-1 block max-w-xl text-xs text-[rgb(var(--text-muted))]">{row.summary}</span>
                 </button>,
-                <AdminBadge key={`${row.id}-entity`} tone={actionTone(row.action)}>{row.entity}</AdminBadge>,
+                <AdminBadge key={`${row.id}-entity`} tone={actionTone(row.action)}>{entityLabel(row.entity, t)}</AdminBadge>,
                 row.actor,
                 <div key={`${row.id}-links`} className="flex flex-wrap gap-1.5">
                   {row.bookingId ? <AdminBadge tone="neutral">{row.bookingId}</AdminBadge> : null}
@@ -213,7 +228,7 @@ export default function AuditLogsPage() {
               <TimelineList
                 items={rows.slice(0, 8).map((row) => ({
                   time: formatDateTime(row.createdAt),
-                  title: `${row.action.replace(/_/g, ' ')} / ${row.entity}`,
+                  title: `${row.action.replace(/_/g, ' ')} / ${entityLabel(row.entity, t)}`,
                   detail: row.summary,
                   tone: actionTone(row.action),
                 }))}

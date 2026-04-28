@@ -9,7 +9,7 @@ import { useI18n } from '@/hooks/useI18n';
 import { useAuthStore } from '@/store/auth.store';
 import {
   ControlSurface,
-  DataTable,
+  EmptyState,
   FeedbackPopup,
   InlineAlert,
   KeyValueList,
@@ -22,7 +22,8 @@ import {
   TimelineList,
   WorkspaceLayout,
 } from './ui';
-import { AdminBadge, AdminButton, AdminInput, AdminModal, AdminSelect, AdminSpinner, cn } from './primitives';
+import { MoneyInput } from './lead-ui';
+import { AdminBadge, AdminButton, AdminIconButton, AdminInput, AdminModal, AdminSelect, AdminSpinner, cn } from './primitives';
 
 type LeadStatus =
   | 'new'
@@ -296,6 +297,44 @@ function buildActionSummary(lead: LeadRow, t: (key: string, params?: Record<stri
   };
 }
 
+function EyeIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className="h-4 w-4" aria-hidden="true">
+      <path d="M2.75 10S5.5 4.75 10 4.75 17.25 10 17.25 10 14.5 15.25 10 15.25 2.75 10 2.75 10Z" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="10" cy="10" r="2.25" stroke="currentColor" strokeWidth="1.35" />
+    </svg>
+  );
+}
+
+function PhoneIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className="h-4 w-4" aria-hidden="true">
+      <path d="M15.3 12.47c-.86-.09-1.7-.23-2.5-.42a1.26 1.26 0 0 0-1.23.36l-1.09 1.09a14.02 14.02 0 0 1-4-4l1.09-1.09c.33-.33.46-.81.36-1.23a12.52 12.52 0 0 1-.42-2.5A1.25 1.25 0 0 0 6.27 3.5H4.5c-.69 0-1.26.58-1.22 1.27A15.98 15.98 0 0 0 15.23 16.72c.69.04 1.27-.53 1.27-1.22v-1.77a1.25 1.25 0 0 0-1.2-1.26Z" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function ArrowIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className="h-4 w-4" aria-hidden="true">
+      <path d="M5 10h10m0 0-4-4m4 4-4 4" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function rowDepositStatus(lead: LeadRow) {
+  if (lead.status === 'deposit_expired') return { value: 'deposit_expired', tone: 'danger' as Tone };
+  if (hasReceivedDeposit(lead)) return { value: 'deposit_received', tone: 'success' as Tone };
+  if (hasRequestedDeposit(lead)) return { value: 'deposit_requested', tone: 'warning' as Tone };
+  return { value: 'not requested', tone: 'neutral' as Tone };
+}
+
+function rowAppointmentStatus(lead: LeadRow) {
+  if (lead.appointmentStatus) return { value: lower(lead.appointmentStatus), tone: lead.appointmentId ? 'info' as Tone : 'neutral' as Tone };
+  if (hasReceivedDeposit(lead)) return { value: 'appointment missing', tone: 'warning' as Tone };
+  return { value: 'pending', tone: 'neutral' as Tone };
+}
+
 export function LeadManagementScreen() {
   const { t } = useI18n();
   const userRole = useAuthStore((state) => state.user?.role);
@@ -323,7 +362,7 @@ export function LeadManagementScreen() {
   const [feedback, setFeedback] = useState<{ tone: Tone; message: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [createDraft, setCreateDraft] = useState({ name: '', email: '', phone: '', source: 'web', notes: '' });
-  const [editDraft, setEditDraft] = useState({ notes: '', quotedPrice: '' });
+  const [editDraft, setEditDraft] = useState({ notes: '', quotedPrice: null as number | null });
   const [assignDraft, setAssignDraft] = useState('');
 
   const active = rows.find((row) => row.id === activeId) ?? rows[0];
@@ -379,7 +418,7 @@ export function LeadManagementScreen() {
     if (!active) return;
     setEditDraft({
       notes: active.notes,
-      quotedPrice: active.quotedPrice ? String(active.quotedPrice) : '',
+      quotedPrice: active.quotedPrice || null,
     });
     setAssignDraft(active.ownerId ?? '');
   }, [active]);
@@ -450,7 +489,7 @@ export function LeadManagementScreen() {
       async () => {
         await leadsApi.update(active.id, {
           notes: editDraft.notes,
-          quotedPrice: editDraft.quotedPrice ? Number(editDraft.quotedPrice) : undefined,
+          quotedPrice: editDraft.quotedPrice ?? undefined,
         });
         setEditOpen(false);
       },
@@ -815,69 +854,120 @@ export function LeadManagementScreen() {
               </span>
             ) : undefined}
           >
-            <DataTable
-              columns={[
-                t('lead.customer'),
-                t('lead.table.product'),
-                t('lead.table.pickupDate'),
-                t('lead.table.deposit'),
-                t('lead.table.appointment'),
-                t('lead.table.nextStep'),
-                t('lead.table.actions'),
-              ]}
-              loading={loading}
-              empty={t('leadOps.empty')}
-              rows={filteredRows.map((lead) => {
-                const rowAction = buildActionSummary(lead, t);
-                const selected = active?.id === lead.id;
+            {filteredRows.length ? (
+              <div className="overflow-hidden rounded-[30px] border border-[rgb(var(--surface-border))]/80 bg-[rgb(var(--surface-2))]/96 shadow-[0_18px_40px_rgba(15,23,42,0.07)]">
+                <div className="hidden grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)_220px_148px] gap-4 border-b border-[rgb(var(--surface-border))]/70 bg-[rgb(var(--surface-3))]/82 px-6 py-4 text-[10px] font-bold uppercase tracking-[0.18em] text-[rgb(var(--text-muted))] lg:grid">
+                  <span>{t('lead.customer')}</span>
+                  <span>{t('common.status')}</span>
+                  <span>{t('lead.table.nextStep')}</span>
+                  <span className="text-right">{t('lead.table.actions')}</span>
+                </div>
 
-                return [
-                  <button
-                    key={lead.id}
-                    type="button"
-                    className={cn(
-                      'w-full rounded-[20px] px-3 py-2 text-left transition duration-200',
-                      selected && 'bg-[rgb(var(--surface-3))] ring-1 ring-[rgb(var(--accent-solid))]/25',
-                    )}
-                    onClick={() => setActiveId(lead.id)}
-                  >
-                    <span className="block truncate font-semibold text-[rgb(var(--text-primary))]">{lead.customer}</span>
-                    <span className="block truncate text-xs text-[rgb(var(--text-muted))]">{lead.phone}</span>
-                    <span className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[rgb(var(--text-secondary))]">
-                      <StatusBadge value={lead.status} tone={urgencyTone(lead)} />
-                      {isManualLead(lead) ? <AdminBadge tone="warning">{t('lead.manual.badge')}</AdminBadge> : null}
-                      <span className="truncate">{lead.owner}</span>
-                    </span>
-                  </button>,
-                  <ProductCell key={`${lead.id}-product`} lead={lead} />,
-                  <DateCell key={`${lead.id}-pickup`} pickupDate={lead.pickupDate} returnDate={lead.returnDate} />,
-                  <DepositCell key={`${lead.id}-deposit`} lead={lead} />,
-                  <AppointmentCell key={`${lead.id}-appointment`} lead={lead} />,
-                  <NextStepCell key={`${lead.id}-next`} lead={lead} />,
-                  <div key={`${lead.id}-actions`} className="flex flex-wrap justify-end gap-2">
-                    <Link className="button-secondary text-center" href={`/admin/leads/${lead.id}`}>
-                      {t('lead.actions.open_detail')}
-                    </Link>
+                <div className="divide-y divide-[rgb(var(--surface-border))]/70">
+                  {filteredRows.map((lead) => {
+                    const rowAction = buildActionSummary(lead, t);
+                    const selected = active?.id === lead.id;
+                    const depositBadge = rowDepositStatus(lead);
+                    const appointmentBadge = rowAppointmentStatus(lead);
 
-                    {rowAction.href ? (
-                      <Link className="button-primary text-center" href={rowAction.href}>
-                        {rowAction.label}
-                      </Link>
-                    ) : (
-                      <AdminButton
-                        type="button"
-                        size="sm"
-                        onClick={() => requestDeposit(lead)}
-                        loading={busyAction === `request-deposit-${lead.id}`}
-                        disabled={!hasRentalRequestContext(lead) || hasRequestedDeposit(lead) || hasBooking(lead)}
+                    return (
+                      <div
+                        key={lead.id}
+                        className={cn(
+                          'group relative transition duration-200 hover:bg-[rgb(var(--surface-3))]/74',
+                          selected && 'bg-[rgb(var(--surface-3))]/88',
+                        )}
                       >
-                        {rowAction.label}
-                      </AdminButton>
-                    )}
-                  </div>,
-                ];
-              })}
-            />
+                        {selected ? <span className="absolute inset-y-0 left-0 w-1 rounded-r-full bg-[rgb(var(--accent-strong))]" /> : null}
+                        <div className="grid gap-4 px-5 py-5 lg:grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)_220px_148px] lg:px-6">
+                          <button type="button" className="text-left" onClick={() => setActiveId(lead.id)}>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="truncate text-base font-semibold tracking-[-0.02em] text-[rgb(var(--text-primary))]">{lead.customer}</span>
+                              {isManualLead(lead) ? <AdminBadge tone="warning">{t('lead.manual.badge')}</AdminBadge> : null}
+                            </div>
+                            <p className="mt-1 truncate text-sm text-[rgb(var(--text-secondary))]">{lead.productName ?? t('lead.no_product.title')}</p>
+                            <p className="mt-2 text-xs leading-5 text-[rgb(var(--text-muted))]">
+                              {lead.pickupDate ? formatDate(lead.pickupDate) : t('lead.no_pickup_date.title')} · {lead.owner}
+                            </p>
+                          </button>
+
+                          <div className="space-y-3">
+                            <div className="flex flex-wrap gap-2">
+                              <StatusBadge value={lead.status} tone={urgencyTone(lead)} />
+                              <StatusBadge value={depositBadge.value} tone={depositBadge.tone} />
+                              <StatusBadge value={appointmentBadge.value} tone={appointmentBadge.tone} />
+                            </div>
+                            <p className="text-xs leading-5 text-[rgb(var(--text-secondary))]">
+                              {lead.notes || (hasRequestedDeposit(lead) ? t('lead.deposit.deadline') : t('lead.no_product.description'))}
+                            </p>
+                          </div>
+
+                          <div className="space-y-2">
+                            <p className="text-sm font-semibold text-[rgb(var(--text-primary))]">{t(nextStepKey(lead))}</p>
+                            <p className="text-xs leading-5 text-[rgb(var(--text-secondary))]">
+                              {hasBooking(lead)
+                                ? t('lead.booking.locked')
+                                : lead.appointmentTime
+                                  ? formatDateTime(lead.appointmentTime)
+                                  : hasRequestedDeposit(lead)
+                                    ? relativeWindow(lead.depositDeadlineAt, {
+                                        fallback: t('leadOps.notSet'),
+                                        overdue: t('leadOps.overdue'),
+                                        left: t('leadOps.left'),
+                                      })
+                                    : lead.phone}
+                            </p>
+                          </div>
+
+                          <div className="flex items-center justify-end gap-2 opacity-100 transition duration-150 lg:opacity-0 lg:group-hover:opacity-100">
+                            <Link href={`/admin/leads/${lead.id}`} title={t('lead.actions.open_detail')}>
+                              <AdminIconButton aria-label={t('lead.actions.open_detail')}>
+                                <EyeIcon />
+                              </AdminIconButton>
+                            </Link>
+                            <AdminIconButton
+                              title={t('lead.actions.call_customer')}
+                              aria-label={t('lead.actions.call_customer')}
+                              onClick={async () => {
+                                const logged = await markContacted(lead);
+                                if (logged) {
+                                  window.location.assign(`tel:${lead.phone}`);
+                                }
+                              }}
+                            >
+                              <PhoneIcon />
+                            </AdminIconButton>
+                            {rowAction.href ? (
+                              <Link href={rowAction.href} title={rowAction.label}>
+                                <AdminIconButton variant="primary" aria-label={rowAction.label}>
+                                  <ArrowIcon />
+                                </AdminIconButton>
+                              </Link>
+                            ) : (
+                              <AdminIconButton
+                                variant="primary"
+                                title={rowAction.label}
+                                aria-label={rowAction.label}
+                                onClick={() => requestDeposit(lead)}
+                                disabled={!hasRentalRequestContext(lead) || hasRequestedDeposit(lead) || hasBooking(lead)}
+                              >
+                                <ArrowIcon />
+                              </AdminIconButton>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <EmptyState
+                title={t('leadOps.empty')}
+                description="Clear the filters or create a fresh lead to restart the operating queue."
+                action={<PermissionButton permission="manage_leads" onClick={() => setCreateOpen(true)}>{t('leadOps.createLead')}</PermissionButton>}
+              />
+            )}
           </SectionCard>
 
           {active ? (
@@ -1017,7 +1107,10 @@ export function LeadManagementScreen() {
         )}
       >
         <div className="grid gap-4">
-          <LeadTextField label={t('leadOps.form.quote')} type="number" value={editDraft.quotedPrice} onChange={(value) => setEditDraft((draft) => ({ ...draft, quotedPrice: value }))} />
+          <label className="grid gap-1.5 text-sm font-semibold text-[rgb(var(--text-primary))]">
+            {t('leadOps.form.quote')}
+            <MoneyInput value={editDraft.quotedPrice} onValueChange={(value) => setEditDraft((draft) => ({ ...draft, quotedPrice: value }))} />
+          </label>
           <label className="grid gap-1.5 text-sm font-semibold text-[rgb(var(--text-primary))]">
             {t('leadOps.form.notes')}
             <textarea className="field h-32 py-3" value={editDraft.notes} onChange={(event) => setEditDraft((draft) => ({ ...draft, notes: event.target.value }))} />

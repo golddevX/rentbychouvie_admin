@@ -226,14 +226,14 @@ function normalizeApiRows(config: CrudModuleConfig, apiRows: any[]): CrudRecord[
     case 'rental-admin-bookings':
       return apiRows.map((booking) => ({
         id: booking.id,
-        title: booking.customer?.name ?? 'Booking',
+        title: booking.customer?.name ?? 'Đơn thuê',
         subtitle: booking.id,
         item: booking.items?.[0]?.product?.name ?? 'No item',
         period: `${booking.startDate?.slice(0, 10)} to ${booking.endDate?.slice(0, 10)}`,
         status: fromApiStatus(booking.status),
         paid: booking.rental?.payments?.[0]?.amountPaid ?? 0,
         deposit: booking.rental?.payments?.[0]?.depositAmount ?? 0,
-        timeline: ['Booking loaded from backend'],
+        timeline: ['Đơn thuê đã tải từ backend'],
       }));
     case 'rental-admin-payments':
       return apiRows.map((payment) => ({

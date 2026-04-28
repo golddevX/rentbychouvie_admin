@@ -22,7 +22,6 @@ export function Sidebar() {
     { label: t('nav.leads'), href: '/dashboard/leads', icon: '🎯' },
     { label: t('nav.bookings'), href: '/dashboard/bookings', icon: '📅' },
     { label: t('nav.inventory'), href: '/dashboard/inventory', icon: '📦' },
-    { label: t('nav.rentals'), href: '/dashboard/rentals', icon: '🏪' },
     { label: t('nav.payments'), href: '/dashboard/payments', icon: '💳' },
     { label: t('nav.reports'), href: '/dashboard/reports', icon: '📈' },
   ];

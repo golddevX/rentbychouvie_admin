@@ -142,6 +142,17 @@ export default function BookingDetailPage() {
           />
         </SectionCard>
 
+        <SectionCard title={t('bookingOps.detail.sourceSection')} description={t('bookingOps.detail.sourceDesc')}>
+          <KeyValueList
+            items={[
+              { label: t('bookingOps.detail.sourceLead'), value: booking.leadId ?? booking.lead?.id ?? '-' },
+              { label: t('bookingOps.detail.sourceAppointment'), value: booking.appointmentId ?? booking.appointment?.id ?? booking.lead?.appointmentId ?? '-' },
+              { label: t('bookingOps.detail.sourceFlow'), value: t('bookingOps.detail.sourceFlowValue') },
+              { label: t('bookingOps.detail.nextAction'), value: isPaymentBlocking ? t('booking.detailNextStepCollect') : t('booking.detailNextStepFulfillment') },
+            ]}
+          />
+        </SectionCard>
+
         <SectionCard title={t('booking.item')} description={t('booking.inventoryItemDesc')}>
           <DataTable
             columns={[t('booking.item'), t('booking.product'), t('booking.amount')]}

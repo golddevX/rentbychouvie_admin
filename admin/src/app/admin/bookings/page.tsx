@@ -62,6 +62,8 @@ type BookingRow = {
   locked: boolean;
   lockedAt?: string;
   rentalStatus?: string;
+  leadId?: string;
+  appointmentId?: string;
   items: any[];
   payments: any[];
   timeline: Array<{ time: string; title: string; detail: string; tone?: Tone }>;
@@ -148,6 +150,8 @@ function bookingFromApi(row: any): BookingRow {
     locked,
     lockedAt: row.lockedAt,
     rentalStatus: row.rental?.status,
+    leadId: row.leadId ?? row.lead?.id,
+    appointmentId: row.appointmentId ?? row.appointment?.id ?? row.lead?.appointmentId,
     items: row.items ?? [],
     payments,
     timeline: [
@@ -487,6 +491,17 @@ export default function BookingsPage() {
                         { label: t('bookingOps.detail.rentalDays'), value: active.rentalDays || '-' },
                         { label: t('bookingOps.detail.durationPolicy'), value: `${active.durationDays || '-'} ${t('bookingOps.detail.days')}` },
                         { label: t('bookingOps.detail.rentalStatus'), value: active.rentalStatus ? <StatusBadge value={String(active.rentalStatus).toLowerCase()} /> : '-' },
+                        { label: t('bookingOps.detail.nextAction'), value: t(nextStepKey(active)) },
+                      ]}
+                    />
+                  </SectionCard>
+
+                  <SectionCard title={t('bookingOps.detail.sourceSection')} description={t('bookingOps.detail.sourceDesc')} className="shadow-none">
+                    <KeyValueList
+                      items={[
+                        { label: t('bookingOps.detail.sourceLead'), value: active.leadId ? `#${active.leadId}` : '-' },
+                        { label: t('bookingOps.detail.sourceAppointment'), value: active.appointmentId ? `#${active.appointmentId}` : '-' },
+                        { label: t('bookingOps.detail.sourceFlow'), value: t('bookingOps.detail.sourceFlowValue') },
                         { label: t('bookingOps.detail.nextAction'), value: t(nextStepKey(active)) },
                       ]}
                     />

@@ -1,9 +1,10 @@
 import { useI18nStore } from '@/store/i18n.store';
+import { en } from '@/locales/en';
 import { vi } from '@/locales/vi';
 
-const dictionaries = { en: vi, vi };
+const dictionaries = { en, vi };
 
-type Dictionary = typeof vi;
+type Dictionary = typeof vi | typeof en;
 
 // Helper to get nested value from the dictionary object
 const getNestedValue = (obj: any, path: string): string | undefined => {
@@ -13,7 +14,7 @@ const getNestedValue = (obj: any, path: string): string | undefined => {
 export const useI18n = () => {
   const locale = useI18nStore((state) => state.locale);
   const setLocale = useI18nStore((state) => state.setLocale);
-  const dictionary: Dictionary = dictionaries[locale] || dictionaries.vi;
+  const dictionary = (dictionaries[locale] || dictionaries.vi) as Dictionary;
 
   const t = (key: string, params?: Record<string, string | number>): string => {
     let text = getNestedValue(dictionary, key) || getNestedValue(dictionaries.vi, key);
