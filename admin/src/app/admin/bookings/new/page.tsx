@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useSearchParams } from 'next/navigation';
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import { bookingsApi, leadsApi } from '@/lib/api';
 import { DataTable, InlineAlert, KeyValueList, PageHeader, RailSection, SectionCard, StatusBadge, WorkspaceLayout } from '@/components/admin/ui';
 import { AdminButton, AdminInput, AdminSelect, AdminSpinner } from '@/components/admin/primitives';
@@ -53,7 +53,7 @@ function securityDepositPolicy(basePrice: number) {
   return { amount: 1000000, label: '1M or 500k + ID', detail: '>1M: hold 1M or 500k plus ID' };
 }
 
-export default function NewBookingPage() {
+function NewBookingPageContent() {
   const { t } = useI18n();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -130,7 +130,7 @@ export default function NewBookingPage() {
           uniqueCustomers.set(id, id);
         });
         setLeadId(initialLeadId ? (preferredLead?.id ?? '') : '');
-        setCustomerId(initialCustomerId || preferredLead?.customer?.id ?? [...uniqueCustomers.values()][0] ?? '');
+        setCustomerId(initialCustomerId || (preferredLead?.customer?.id ?? [...uniqueCustomers.values()][0] ?? ''));
         setInventoryItemId((current) => itemRows.some((item: any) => item.id === current) ? current : (itemRows[0]?.id ?? ''));
       } catch (err: any) {
         setError(err?.response?.data?.message ?? t('booking.loadCreateDataFailed'));
@@ -339,5 +339,13 @@ export default function NewBookingPage() {
         </WorkspaceLayout>
       )}
     </>
+  );
+}
+
+export default function NewBookingPage() {
+  return (
+    <Suspense fallback={<div className="flex items-center gap-2 text-sm text-[rgb(var(--text-secondary))]"><AdminSpinner />...</div>}>
+      <NewBookingPageContent />
+    </Suspense>
   );
 }
