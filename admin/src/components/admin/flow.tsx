@@ -19,8 +19,8 @@ export function ImageManager({ label }: { label?: string }) {
     <FormSection title={label ?? t('inventory.itemImages')} description={t('inventory.itemDetailsDesc')}>
       <div className="grid gap-3 sm:grid-cols-3">
         {images.map((image, index) => (
-          <div key={image} className="rounded-xl border border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-3))] p-3">
-            <div className="aspect-square rounded-lg bg-white" />
+          <div key={image} className="rounded-[22px] border border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-3))] p-3">
+            <div className="aspect-square rounded-[18px] bg-[rgb(var(--surface))]" />
             <div className="mt-2 flex items-center justify-between text-xs">
               <span className="truncate">{image}</span>
               <button
@@ -37,7 +37,8 @@ export function ImageManager({ label }: { label?: string }) {
           </div>
         ))}
         <button
-          className="grid aspect-square place-items-center rounded-xl border border-dashed border-[rgb(var(--surface-border))] text-sm font-semibold text-[rgb(var(--text-secondary))]"
+          type="button"
+          className="grid aspect-square place-items-center rounded-[22px] border border-dashed border-[rgb(var(--surface-border))] text-sm font-semibold text-[rgb(var(--text-secondary))]"
           onClick={() => setImages((current) => [...current, `image-${current.length + 1}.jpg`])}
         >
           {t('common.create')}
@@ -362,31 +363,47 @@ export function PickupDeskFlow() {
 export function ReturnDeskFlow() {
   const { t } = useI18n();
   const [condition, setCondition] = useState('good');
+  const [damageFee, setDamageFee] = useState(0);
   const [lateDays, setLateDays] = useState(0);
   const [lostAccessoryValue, setLostAccessoryValue] = useState(0);
   const [affectsNextBooking, setAffectsNextBooking] = useState(false);
   const [scanned, setScanned] = useState('AODAI-RED-002');
   const [feedback, setFeedback] = useState<{ tone: 'success' | 'warning' | 'danger'; message: string } | null>(null);
   const [busy, setBusy] = useState(false);
-  const active = bookings.find((booking) => booking.status === 'damage_review') ?? bookings[2];
+  const active = bookings.find((booking) => booking.status === 'settlement_pending') ?? bookings[2];
   const dirtyHold = condition === 'dirty' ? 500000 : 0;
-  const repairFee = condition === 'damaged' ? 150000 : condition === 'incomplete' ? 250000 : 0;
+  const repairFee = Math.max(Number(damageFee || 0), 0);
   const lateFee = lateDays * Math.ceil(active.rentalFee / 3);
   const nextBookingFee = affectsNextBooking ? active.rentalFee : 0;
   const fees = dirtyHold + repairFee + lateFee + lostAccessoryValue + nextBookingFee;
   const deposit = 500000;
-  const returnQueue = bookings.filter((booking) => ['picked_up', 'return_pending', 'damage_review'].includes(booking.status));
+  const returnQueue = bookings.filter((booking) => ['picked_up', 'return_pending', 'settlement_pending'].includes(booking.status));
 
   const settleReturn = async () => {
     setBusy(true);
     setFeedback(null);
     try {
       await returnsApi.settle(active.id, {
-        qrCodes: [scanned],
         condition: condition === 'good' ? 'clean' : condition as 'dirty' | 'damaged' | 'incomplete',
-        damageFee: repairFee,
-        accessoryLostValues: lostAccessoryValue ? [lostAccessoryValue] : [],
-        affectsNextBooking,
+        lateFee,
+        dirtyFee: dirtyHold,
+        otherFee: nextBookingFee,
+        items: [
+          {
+            inventoryItemId: active.id,
+            condition:
+              condition === 'good'
+                ? 'good'
+                : condition === 'dirty'
+                  ? 'dirty'
+                  : condition === 'damaged'
+                    ? 'damaged'
+                    : 'missing_accessory',
+            images: [],
+            damageFee: repairFee,
+            accessoryFee: lostAccessoryValue,
+          },
+        ],
       });
       setFeedback({ tone: 'success', message: t('return.settled') });
     } catch (err: any) {
@@ -409,7 +426,7 @@ export function ReturnDeskFlow() {
       <SummaryRow
         items={[
           { label: t('return.returnedItem'), value: active.itemCode, detail: active.customer, tone: 'info' },
-          { label: t('return.condition'), value: condition, detail: t('return.conditionDesc'), tone: fees > 0 ? 'warning' : 'success' },
+          { label: t('return.conditionLabel'), value: condition, detail: t('return.conditionDesc'), tone: fees > 0 ? 'warning' : 'success' },
           { label: t('return.totalDeduction'), value: currency(fees), detail: t('return.refundPreviewDesc'), tone: fees > 0 ? 'warning' : 'success' },
           { label: t('return.refundAmount'), value: currency(Math.max(deposit - fees, 0)), detail: t('return.depositHeld'), tone: 'accent' },
         ]}
@@ -438,13 +455,13 @@ export function ReturnDeskFlow() {
               title: `${booking.id} / ${booking.customer}`,
               detail: `${booking.returnAt} / ${booking.itemCode}`,
               status: booking.status,
-              tone: booking.status === 'damage_review' ? 'danger' : 'warning',
+              tone: booking.status === 'settlement_pending' ? 'danger' : 'warning',
               href: `/admin/returns?booking=${booking.id}`,
-              action: t('return.inspection'),
+              action: t('return.inspectionLabel'),
             }))}
           />
         </SectionCard>
-        <SectionCard title={t('return.inspection')}>
+        <SectionCard title={t('return.inspectionLabel')}>
           <InlineAlert tone={fees > 0 ? 'warning' : 'success'}>
             {fees > 0 ? t('return.conditionDesc') : t('return.refundPreviewDesc')}
           </InlineAlert>
@@ -452,7 +469,7 @@ export function ReturnDeskFlow() {
             <FormSection title={t('return.returnedItem')} description={t('return.returnedItemDesc')}>
               <AdminInput value={scanned} onChange={(event) => setScanned(event.target.value)} />
             </FormSection>
-            <FormSection title={t('return.condition')} description={t('return.conditionDesc')}>
+            <FormSection title={t('return.conditionLabel')} description={t('return.conditionDesc')}>
               <AdminSelect value={condition} onChange={(event) => setCondition(event.target.value)}>
                 <option value="good">{t('inventory.condition.good')}</option>
                 <option value="dirty">{t('inventory.condition.dirty')}</option>
@@ -461,8 +478,12 @@ export function ReturnDeskFlow() {
               </AdminSelect>
             </FormSection>
             <FormSection title={t('return.feeInputs')} description={t('return.feeInputsDesc')}>
-              <AdminInput type="number" min={0} value={lateDays} onChange={(event) => setLateDays(Number(event.target.value || 0))} />
-              <AdminInput type="number" min={0} value={lostAccessoryValue} onChange={(event) => setLostAccessoryValue(Number(event.target.value || 0))} />
+              <AdminInput type="number" min={0} placeholder={t('return.fees.damage_fee')} value={damageFee} onChange={(event) => setDamageFee(Number(event.target.value || 0))} />
+              <AdminInput type="number" min={0} placeholder={t('return.fees.late_fee')} value={lateDays} onChange={(event) => setLateDays(Number(event.target.value || 0))} />
+              <AdminInput type="number" min={0} placeholder={t('return.fees.accessory_fee')} value={lostAccessoryValue} onChange={(event) => setLostAccessoryValue(Number(event.target.value || 0))} />
+              <p className="text-xs text-[rgb(var(--text-muted))]">
+                Nhập phí hư hỏng thực tế nếu cần thu thêm khách. Tình trạng không tự sinh giá.
+              </p>
               <label className="flex items-center justify-between rounded-xl border border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-3))] px-4 py-3 text-sm font-semibold">
                 {t('returnOps.inspection.affectsNextBooking')}
                 <input type="checkbox" checked={affectsNextBooking} onChange={(event) => setAffectsNextBooking(event.target.checked)} />

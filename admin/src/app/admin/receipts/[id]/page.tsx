@@ -3,7 +3,6 @@
 import { useParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { receiptsApi } from '@/lib/api';
-import { payments } from '@/lib/admin/demo-data';
 import { useI18n } from '@/hooks/useI18n';
 import { EmptyState, InlineAlert, PageHeader, ReceiptPreviewCard, SectionCard, StatusBadge } from '@/components/admin/ui';
 import { AdminButton, AdminSpinner } from '@/components/admin/primitives';
@@ -15,8 +14,6 @@ export default function ReceiptPage() {
   const [loading, setLoading] = useState(true);
   const [printing, setPrinting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const fallbackPayment = payments.find((item) => item.receiptId === params.id) ?? payments[0];
 
   const loadReceipt = async () => {
     setLoading(true);
@@ -55,16 +52,16 @@ export default function ReceiptPage() {
     return <div className="flex items-center gap-2 text-sm text-[rgb(var(--text-secondary))]"><AdminSpinner /> {t('common.loading')}</div>;
   }
 
-  const payment = receipt?.payment ?? fallbackPayment;
+  const payment = receipt?.payment ?? null;
   if (!payment) {
     return <EmptyState title={t('errors.notFound')} description={error ?? t('errors.generic')} />;
   }
 
-  const amount = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND', maximumFractionDigits: 0 }).format(payment.amount ?? fallbackPayment.amount);
-  const customer = payment.rental?.booking?.customer?.name ?? fallbackPayment.customer;
-  const bookingId = payment.rental?.booking?.id ?? fallbackPayment.bookingId;
-  const method = String(payment.paymentMethod ?? fallbackPayment.method).toLowerCase();
-  const status = String(payment.status ?? fallbackPayment.status).toLowerCase();
+  const amount = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND', maximumFractionDigits: 0 }).format(Number(payment.amount ?? 0));
+  const customer = payment.rental?.booking?.customer?.name ?? '-';
+  const bookingId = payment.rental?.booking?.id ?? '-';
+  const method = String(payment.paymentMethod ?? '').toLowerCase();
+  const status = String(payment.status ?? '').toLowerCase();
 
   return (
     <>
@@ -82,9 +79,10 @@ export default function ReceiptPage() {
         <SectionCard title={t('receipt.billDetails')} description={t('receipt.billDetailsDesc')}>
           <div className="space-y-4 text-sm">
             <div className="flex justify-between rounded-2xl bg-[rgb(var(--surface-3))]/70 p-4"><span>{t('receipt.booking')}</span><b>{bookingId}</b></div>
-            <div className="flex justify-between rounded-2xl bg-[rgb(var(--surface-3))]/70 p-4"><span>{t('receipt.receiptType')}</span><b>{receipt?.type ?? fallbackPayment.type}</b></div>
-            <div className="flex justify-between rounded-2xl bg-[rgb(var(--surface-3))]/70 p-4"><span>{t('receipt.paymentMethod')}</span><b>{t(`payment.method.${method}`)}</b></div>
+            <div className="flex justify-between rounded-2xl bg-[rgb(var(--surface-3))]/70 p-4"><span>{t('receipt.receiptType')}</span><b>{receipt?.type ?? '-'}</b></div>
+            <div className="flex justify-between rounded-2xl bg-[rgb(var(--surface-3))]/70 p-4"><span>{t('receipt.paymentMethod')}</span><b>{method ? t(`payment.method.${method}`) : '-'}</b></div>
             <div className="flex justify-between rounded-2xl bg-[rgb(var(--surface-3))]/70 p-4"><span>{t('receipt.status')}</span><StatusBadge value={status} /></div>
+            {/* Intentional paper-style receipt note surface for print-oriented preview. */}
             <div className="rounded-[24px] border border-dashed border-[rgb(var(--surface-border))] bg-white/60 p-5">
               <p className="text-xs font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">{t('receipt.printNotes')}</p>
               <p className="mt-2 text-[rgb(var(--text-secondary))]">{t('receipt.printNotesDesc')}</p>

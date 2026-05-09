@@ -1,17 +1,21 @@
 'use client';
 
 import Link from 'next/link';
+import { Suspense } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { bookingsApi } from '@/lib/api';
 import { bookings as demoBookings, currency, type Tone } from '@/lib/admin/demo-data';
 import { useI18n } from '@/hooks/useI18n';
+import { useAdminListParams } from '@/hooks/useAdminListParams';
 import {
+  ActionMenu,
   ControlSurface,
   DataTable,
   FeedbackPopup,
   InlineAlert,
   KeyValueList,
   PageHeader,
+  PaginationControls,
   RailSection,
   SectionCard,
   StatusBadge,
@@ -23,17 +27,19 @@ import { AdminBadge, AdminButton, AdminInput, AdminSelect, AdminSpinner, cn } fr
 
 type BookingStatus =
   | 'draft'
+  | 'awaiting_security_deposit'
+  | 'awaiting_remaining_payment'
+  | 'ready_for_pickup'
   | 'deposit_requested'
   | 'deposit_received'
   | 'confirmed'
   | 'scheduled_pickup'
   | 'picked_up'
   | 'return_pending'
+  | 'settlement_pending'
   | 'returned'
   | 'completed'
-  | 'cancelled'
-  | 'late_return'
-  | 'damage_review';
+  | 'cancelled';
 
 type BookingRow = {
   id: string;
@@ -72,18 +78,25 @@ type BookingRow = {
 const STATUS_OPTIONS: Array<'all' | BookingStatus> = [
   'all',
   'draft',
+  'awaiting_security_deposit',
+  'awaiting_remaining_payment',
+  'ready_for_pickup',
   'deposit_requested',
   'deposit_received',
   'confirmed',
   'scheduled_pickup',
   'picked_up',
   'return_pending',
+  'settlement_pending',
   'returned',
   'completed',
   'cancelled',
-  'late_return',
-  'damage_review',
 ];
+
+const PICKUP_READY_STATUSES: BookingStatus[] = ['ready_for_pickup', 'deposit_received', 'confirmed', 'scheduled_pickup'];
+const RETURN_FLOW_STATUSES: BookingStatus[] = ['picked_up', 'return_pending'];
+const SETTLEMENT_STATUSES: BookingStatus[] = ['returned', 'settlement_pending'];
+const TERMINAL_STATUSES: BookingStatus[] = ['cancelled', 'completed'];
 
 function normalizeStatus(value?: string): BookingStatus {
   const normalized = String(value ?? 'draft').toLowerCase();
@@ -111,7 +124,18 @@ function paymentTotal(payments: any[]) {
     .reduce((sum, payment) => sum + Number(payment.amountPaid || payment.amount || 0), 0);
 }
 
-function bookingFromApi(row: any): BookingRow {
+function hasBookingDepositCovered(booking: Pick<BookingRow, 'bookingDepositPaid' | 'bookingDepositRequired'>) {
+  return booking.bookingDepositRequired <= 0 || booking.bookingDepositPaid >= booking.bookingDepositRequired;
+}
+
+function canRequestDeposit(booking: BookingRow) {
+  return !TERMINAL_STATUSES.includes(booking.status)
+    && !RETURN_FLOW_STATUSES.includes(booking.status)
+    && !SETTLEMENT_STATUSES.includes(booking.status)
+    && !hasBookingDepositCovered(booking);
+}
+
+function bookingFromApi(row: any, labels?: { unknownCustomer: string }): BookingRow {
   const firstItem = row.items?.[0] ?? {};
   const inventoryItem = firstItem.inventoryItem ?? {};
   const product = firstItem.product ?? inventoryItem.product ?? {};
@@ -122,11 +146,16 @@ function bookingFromApi(row: any): BookingRow {
   const bookingDepositRequired = Number(row.bookingDepositRequired ?? row.deposit ?? 0);
   const bookingDepositPaid = Number(row.bookingDepositPaid ?? Math.min(paid, bookingDepositRequired));
   const status = normalizeStatus(row.status);
-  const locked = Boolean(row.lockedAt) || bookingDepositPaid >= bookingDepositRequired || ['deposit_received', 'confirmed', 'scheduled_pickup', 'picked_up', 'return_pending', 'returned', 'completed'].includes(status);
+  const locked = Boolean(row.lockedAt)
+    || hasBookingDepositCovered({ bookingDepositPaid, bookingDepositRequired })
+    || PICKUP_READY_STATUSES.includes(status)
+    || RETURN_FLOW_STATUSES.includes(status)
+    || SETTLEMENT_STATUSES.includes(status)
+    || status === 'completed';
   return {
     id: row.id,
     code: row.orderCode ?? row.bookingCode ?? row.id,
-    customer: row.customer?.name ?? row.customer ?? 'Unknown customer',
+    customer: row.customer?.name ?? row.customer ?? labels?.unknownCustomer ?? '-',
     phone: row.customer?.phone ?? row.phone,
     email: row.customer?.email,
     status,
@@ -157,33 +186,45 @@ function bookingFromApi(row: any): BookingRow {
     timeline: [
       { time: formatDateTime(row.createdAt), title: 'bookingOps.timeline.created', detail: row.createdBy?.fullName ?? '-', tone: 'neutral' },
       row.lockedAt ? { time: formatDateTime(row.lockedAt), title: 'bookingOps.timeline.locked', detail: inventoryItem.serialNumber ?? firstItem.inventoryItemId ?? '-', tone: 'success' } : null,
-      row.rental?.actualPickupDate ? { time: formatDateTime(row.rental.actualPickupDate), title: 'bookingOps.timeline.pickedUp', detail: row.rentalStatus ?? 'picked up', tone: 'info' } : null,
+      row.rental?.actualPickupDate ? { time: formatDateTime(row.rental.actualPickupDate), title: 'bookingOps.timeline.pickedUp', detail: row.rentalStatus ?? 'picked_up', tone: 'info' } : null,
       row.rental?.actualReturnDate ? { time: formatDateTime(row.rental.actualReturnDate), title: 'bookingOps.timeline.returned', detail: row.rentalStatus ?? 'returned', tone: 'success' } : null,
     ].filter(Boolean) as BookingRow['timeline'],
   };
 }
 
 function nextStepKey(booking: BookingRow) {
-  if (booking.status === 'draft') return 'bookingOps.next.requestDeposit';
-  if (booking.status === 'deposit_requested') return booking.bookingDepositPaid >= booking.bookingDepositRequired ? 'bookingOps.next.confirm' : 'bookingOps.next.collectDeposit';
-  if (booking.status === 'deposit_received' || booking.status === 'confirmed' || booking.status === 'scheduled_pickup') return 'bookingOps.next.pickup';
-  if (booking.status === 'picked_up' || booking.status === 'return_pending' || booking.status === 'late_return' || booking.status === 'damage_review') return 'bookingOps.next.return';
-  if (booking.status === 'returned') return 'bookingOps.next.settle';
   if (booking.status === 'cancelled') return 'bookingOps.next.cancelled';
-  return 'bookingOps.next.complete';
+  if (booking.status === 'completed') return 'bookingOps.next.complete';
+  if (SETTLEMENT_STATUSES.includes(booking.status)) return 'bookingOps.next.settle';
+  if (RETURN_FLOW_STATUSES.includes(booking.status)) return 'bookingOps.next.return';
+  if (booking.status === 'awaiting_remaining_payment' && booking.remaining > 0) return 'bookingOps.next.collectPayment';
+  if (PICKUP_READY_STATUSES.includes(booking.status)) return 'bookingOps.next.pickup';
+  if (booking.remaining <= 0 && hasBookingDepositCovered(booking)) return 'bookingOps.next.pickup';
+  if (hasBookingDepositCovered(booking)) return 'bookingOps.next.pickup';
+  if (booking.status === 'draft' && booking.bookingDepositPaid <= 0) return 'bookingOps.next.requestDeposit';
+  if (booking.status === 'deposit_requested' || booking.status === 'awaiting_security_deposit' || booking.bookingDepositPaid > 0) {
+    return 'bookingOps.next.collectDeposit';
+  }
+  return 'bookingOps.next.requestDeposit';
 }
 
 function actionHref(booking: BookingRow) {
+  if (booking.status === 'completed') return `/admin/payments?booking=${booking.id}`;
   const next = nextStepKey(booking);
   if (next === 'bookingOps.next.pickup') return `/admin/pickup?booking=${booking.id}`;
   if (next === 'bookingOps.next.return' || next === 'bookingOps.next.settle') return `/admin/returns?booking=${booking.id}`;
-  return `/admin/payments/from-booking/${booking.id}`;
+  return `/admin/payments?booking=${booking.id}`;
+}
+
+function actionLabelKey(booking: BookingRow) {
+  if (booking.status === 'completed') return 'booking.reviewPayment';
+  return nextStepKey(booking);
 }
 
 function lifecycleTone(booking: BookingRow): Tone {
-  if (['cancelled', 'late_return', 'damage_review'].includes(booking.status)) return 'danger';
-  if (['draft', 'deposit_requested'].includes(booking.status)) return 'warning';
-  if (['picked_up', 'return_pending'].includes(booking.status)) return 'accent';
+  if (['cancelled', 'settlement_pending'].includes(booking.status)) return 'danger';
+  if (['draft', 'deposit_requested', 'awaiting_security_deposit', 'awaiting_remaining_payment'].includes(booking.status)) return 'warning';
+  if (['ready_for_pickup', 'picked_up', 'return_pending'].includes(booking.status)) return 'accent';
   if (['returned', 'completed'].includes(booking.status)) return 'success';
   return 'info';
 }
@@ -195,24 +236,34 @@ function lockLabelKey(booking: BookingRow) {
 
 function matchesFinancialFilter(booking: BookingRow, filter: string) {
   if (filter === 'all') return true;
-  if (filter === 'needs_deposit') return booking.bookingDepositPaid < booking.bookingDepositRequired;
+  if (filter === 'needs_deposit') return !hasBookingDepositCovered(booking);
   if (filter === 'payment_remaining') return booking.remaining > 0;
-  if (filter === 'pickup_ready') return ['deposit_received', 'confirmed', 'scheduled_pickup'].includes(booking.status);
-  if (filter === 'return_due') return ['picked_up', 'return_pending', 'late_return', 'damage_review'].includes(booking.status);
+  if (filter === 'pickup_ready') return PICKUP_READY_STATUSES.includes(booking.status);
+  if (filter === 'return_due') return RETURN_FLOW_STATUSES.includes(booking.status);
   return true;
 }
 
-export default function BookingsPage() {
+function BookingsPageContent() {
   const { t } = useI18n();
-  const [rows, setRows] = useState<BookingRow[]>(demoBookings.map(bookingFromApi));
+  const bookingLabels = useMemo(() => ({
+    unknownCustomer: t('leadOps.fallback.unknownCustomer'),
+  }), [t]);
+  const { params, updateParams, setPage, setLimit } = useAdminListParams({
+    page: 1,
+    limit: 20,
+    sortBy: 'createdAt',
+    sortOrder: 'desc',
+  });
+  const [rows, setRows] = useState<BookingRow[]>(demoBookings.map((row) => bookingFromApi(row, bookingLabels)));
   const [activeId, setActiveId] = useState(demoBookings[0]?.id ?? '');
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<string | null>(null);
-  const [query, setQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | BookingStatus>('all');
   const [financialFilter, setFinancialFilter] = useState('all');
   const [error, setError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ tone: Tone; message: string } | null>(null);
+  const [meta, setMeta] = useState({ page: 1, limit: 20, total: 0, totalPages: 0, hasNextPage: false, hasPreviousPage: false });
+  const query = params.search;
+  const statusFilter = (params.status || 'all') as 'all' | BookingStatus;
 
   const active = useMemo(() => rows.find((row) => row.id === activeId) ?? rows[0], [activeId, rows]);
 
@@ -220,13 +271,22 @@ export default function BookingsPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await bookingsApi.getAll();
-      const next = (res.data ?? []).map(bookingFromApi);
-      setRows(next.length ? next : demoBookings.map(bookingFromApi));
-      setActiveId((current) => next.find((row: BookingRow) => row.id === current)?.id ?? next[0]?.id ?? demoBookings[0]?.id ?? '');
+      const res = await bookingsApi.list({
+        page: params.page,
+        limit: params.limit,
+        search: query || undefined,
+        status: statusFilter === 'all' ? undefined : statusFilter.toUpperCase(),
+        sortBy: params.sortBy,
+        sortOrder: params.sortOrder,
+      });
+      const next = (res.data?.data ?? []).map((row: any) => bookingFromApi(row, bookingLabels));
+      setRows(next);
+      setMeta(res.data?.meta ?? { page: params.page, limit: params.limit, total: next.length, totalPages: next.length ? 1 : 0, hasNextPage: false, hasPreviousPage: false });
+      setActiveId((current) => next.find((row: BookingRow) => row.id === current)?.id ?? next[0]?.id ?? '');
     } catch (err: any) {
       setError(err?.response?.data?.message ?? t('bookingOps.errors.loadFallback'));
-      setRows(demoBookings.map(bookingFromApi));
+      setRows(demoBookings.map((row) => bookingFromApi(row, bookingLabels)));
+      setMeta({ page: 1, limit: demoBookings.length, total: demoBookings.length, totalPages: 1, hasNextPage: false, hasPreviousPage: false });
       setActiveId(demoBookings[0]?.id ?? '');
     } finally {
       setLoading(false);
@@ -235,35 +295,19 @@ export default function BookingsPage() {
 
   useEffect(() => {
     void loadBookings();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [params.limit, params.page, params.search, params.sortBy, params.sortOrder, statusFilter]);
 
   const filteredRows = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
     return rows
-      .filter((booking) => statusFilter === 'all' || booking.status === statusFilter)
       .filter((booking) => matchesFinancialFilter(booking, financialFilter))
-      .filter((booking) => {
-        if (!normalizedQuery) return true;
-        return [booking.code, booking.customer, booking.phone, booking.email, booking.product, booking.variant, booking.itemCode]
-          .some((value) => String(value ?? '').toLowerCase().includes(normalizedQuery));
-      })
-      .sort((a, b) => {
-        const priority = (booking: BookingRow) => {
-          if (booking.bookingDepositPaid < booking.bookingDepositRequired) return 1;
-          if (['confirmed', 'scheduled_pickup', 'deposit_received'].includes(booking.status)) return 2;
-          if (['picked_up', 'return_pending', 'late_return', 'damage_review'].includes(booking.status)) return 3;
-          return 9;
-        };
-        return priority(a) - priority(b) || new Date(a.pickupDate).getTime() - new Date(b.pickupDate).getTime();
-      });
-  }, [financialFilter, query, rows, statusFilter]);
+      ;
+  }, [financialFilter, rows]);
 
   const stats = useMemo(() => {
-    const awaitingDeposit = rows.filter((booking) => booking.bookingDepositPaid < booking.bookingDepositRequired).length;
+    const awaitingDeposit = rows.filter((booking) => !hasBookingDepositCovered(booking)).length;
     const locked = rows.filter((booking) => booking.locked).length;
-    const pickupReady = rows.filter((booking) => ['deposit_received', 'confirmed', 'scheduled_pickup'].includes(booking.status)).length;
-    const returnDue = rows.filter((booking) => ['picked_up', 'return_pending', 'late_return', 'damage_review'].includes(booking.status)).length;
+    const pickupReady = rows.filter((booking) => PICKUP_READY_STATUSES.includes(booking.status)).length;
+    const returnDue = rows.filter((booking) => RETURN_FLOW_STATUSES.includes(booking.status)).length;
     const outstanding = rows.reduce((sum, booking) => sum + booking.remaining, 0);
     return { awaitingDeposit, locked, pickupReady, returnDue, outstanding };
   }, [rows]);
@@ -352,9 +396,9 @@ export default function BookingsPage() {
             className="md:col-span-2"
             placeholder={t('bookingOps.filters.searchPlaceholder')}
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => updateParams({ search: event.target.value }, { resetPage: true })}
           />
-          <AdminSelect value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as 'all' | BookingStatus)}>
+          <AdminSelect value={statusFilter} onChange={(event) => updateParams({ status: event.target.value }, { resetPage: true })}>
             {STATUS_OPTIONS.map((status) => (
               <option key={status} value={status}>{status === 'all' ? t('bookingOps.filters.allStatuses') : t(`booking.status.${status}`)}</option>
             ))}
@@ -366,7 +410,7 @@ export default function BookingsPage() {
             <option value="pickup_ready">{t('bookingOps.filters.pickupReady')}</option>
             <option value="return_due">{t('bookingOps.filters.returnDue')}</option>
           </AdminSelect>
-          <AdminButton variant="secondary" onClick={() => { setQuery(''); setStatusFilter('all'); setFinancialFilter('all'); }}>
+          <AdminButton variant="secondary" onClick={() => { updateParams({ search: '', status: '' }, { resetPage: true }); setFinancialFilter('all'); }}>
             {t('bookingOps.filters.reset')}
           </AdminButton>
         </ControlSurface>
@@ -377,18 +421,47 @@ export default function BookingsPage() {
           rail={active ? (
             <>
               <RailSection title={t('bookingOps.actionsPanel')}>
-                <AdminButton className="w-full" onClick={() => requestDeposit(active)} loading={busyAction === `request-${active.id}`} disabled={active.status !== 'draft'}>
-                  {t('bookingOps.actions.requestDeposit')}
-                </AdminButton>
-                <AdminButton variant="secondary" className="w-full" onClick={() => confirmBooking(active)} loading={busyAction === `confirm-${active.id}`} disabled={active.status === 'cancelled' || active.status === 'completed'}>
-                  {t('bookingOps.actions.confirmBooking')}
-                </AdminButton>
-                <Link className="button-primary w-full text-center" href={`/admin/payments/from-booking/${active.id}`}>{t('bookingOps.actions.collectPayment')}</Link>
-                <Link className="button-secondary w-full text-center" href={`/admin/pickup?booking=${active.id}`}>{t('bookingOps.actions.pickupDesk')}</Link>
-                <Link className="button-secondary w-full text-center" href={`/admin/returns?booking=${active.id}`}>{t('bookingOps.actions.returnDesk')}</Link>
-                <AdminButton variant="secondary" className="w-full text-[rgb(var(--danger))]" onClick={() => cancelBooking(active)} loading={busyAction === `cancel-${active.id}`} disabled={active.status === 'cancelled' || active.status === 'completed'}>
-                  {t('bookingOps.actions.cancel')}
-                </AdminButton>
+                {active.status === 'completed' ? (
+                  <div className="grid gap-2">
+                    <Link className="button-secondary w-full text-center" href={`/admin/payments?booking=${active.id}`}>{t('booking.reviewPayment')}</Link>
+                    <Link className="button-secondary w-full text-center" href={`/admin/pickup?booking=${active.id}`}>{t('booking.reviewPickup')}</Link>
+                    <Link className="button-secondary w-full text-center" href={`/admin/returns?booking=${active.id}`}>{t('booking.reviewReturn')}</Link>
+                  </div>
+                ) : (
+                  <Link className="button-primary w-full text-center" href={actionHref(active)}>{t(actionLabelKey(active))}</Link>
+                )}
+                <ActionMenu
+                  className="w-full"
+                  label={t('common.moreActions')}
+                  items={[
+                    ...(active.status === 'completed'
+                      ? [
+                          { label: t('booking.reviewPayment'), href: `/admin/payments?booking=${active.id}` },
+                          { label: t('booking.reviewPickup'), href: `/admin/pickup?booking=${active.id}` },
+                          { label: t('booking.reviewReturn'), href: `/admin/returns?booking=${active.id}` },
+                        ]
+                      : []),
+                    {
+                      label: t('bookingOps.actions.requestDeposit'),
+                      disabled: !canRequestDeposit(active),
+                      onSelect: () => { void requestDeposit(active); },
+                    },
+                    {
+                      label: t('bookingOps.actions.confirmBooking'),
+                      disabled: active.status === 'cancelled' || active.status === 'completed',
+                      onSelect: () => { void confirmBooking(active); },
+                    },
+                    ...(active.remaining > 0 ? [{ label: t('bookingOps.actions.collectPayment'), href: `/admin/payments?booking=${active.id}` }] : []),
+                    { label: t('bookingOps.actions.pickupDesk'), href: `/admin/pickup?booking=${active.id}` },
+                    { label: t('bookingOps.actions.returnDesk'), href: `/admin/returns?booking=${active.id}` },
+                    {
+                      label: t('bookingOps.actions.cancel'),
+                      disabled: active.status === 'cancelled' || active.status === 'completed',
+                      tone: 'danger',
+                      onSelect: () => { void cancelBooking(active); },
+                    },
+                  ]}
+                />
               </RailSection>
               <RailSection title={t('bookingOps.lock.title')}>
                 <InlineAlert tone={active.locked ? 'success' : 'warning'}>
@@ -411,7 +484,12 @@ export default function BookingsPage() {
           <SectionCard title={t('bookingOps.table.title')} description={t('bookingOps.table.description')}>
             <DataTable
               loading={loading}
+              tableClassName="min-w-[1240px]"
               empty={t('bookingOps.empty')}
+              emptyDescription={t('bookingOps.emptyDetail')}
+              rowKeys={filteredRows.map((booking) => booking.id)}
+              selectedRowKey={active?.id}
+              onRowClick={(rowIndex) => setActiveId(filteredRows[rowIndex]?.id ?? '')}
               columns={[
                 t('bookingOps.columns.code'),
                 t('bookingOps.columns.customer'),
@@ -426,10 +504,11 @@ export default function BookingsPage() {
                 t('common.actions'),
               ]}
               rows={filteredRows.map((booking) => [
-                <button key={booking.id} type="button" className="text-left" onClick={() => setActiveId(booking.id)}>
+                <div key={booking.id} className="grid gap-1">
                   <span className="block font-semibold text-[rgb(var(--text-primary))]">{booking.code}</span>
-                  <span className="block text-xs text-[rgb(var(--text-muted))]">{booking.itemCode}</span>
-                </button>,
+                  <span className="block text-xs text-[rgb(var(--text-secondary))]">{booking.itemCode}</span>
+                  <span className="block text-xs text-[rgb(var(--text-muted))]">{booking.leadId ? `#${booking.leadId}` : '-'}</span>
+                </div>,
                 <div key={`${booking.id}-customer`}>
                   <p className="font-semibold text-[rgb(var(--text-primary))]">{booking.customer}</p>
                   <p className="text-xs text-[rgb(var(--text-muted))]">{booking.phone ?? '-'}</p>
@@ -445,11 +524,52 @@ export default function BookingsPage() {
                 currency(booking.paid),
                 <span key={`${booking.id}-remaining`} className={cn(booking.remaining > 0 && 'font-semibold text-[rgb(var(--danger))]')}>{currency(booking.remaining)}</span>,
                 <span key={`${booking.id}-next`} className="font-semibold text-[rgb(var(--text-primary))]">{t(nextStepKey(booking))}</span>,
-                <div key={`${booking.id}-actions`} className="flex flex-wrap gap-2">
-                  <Link className="button-secondary min-h-9 px-3 text-sm" href={`/admin/bookings/${booking.id}`}>{t('common.open')}</Link>
-                  <Link className="button-primary min-h-9 px-3 text-sm" href={actionHref(booking)}>{t(nextStepKey(booking))}</Link>
+                <div key={`${booking.id}-actions`} className="flex flex-wrap items-center justify-end gap-2">
+                  <Link className={cn('min-h-9 px-3 text-sm', booking.status === 'completed' ? 'button-secondary' : 'button-primary')} href={actionHref(booking)}>{t(actionLabelKey(booking))}</Link>
+                  <ActionMenu
+                    label={t('common.moreActions')}
+                    items={[
+                      { label: t('common.open'), href: `/admin/bookings/${booking.id}` },
+                      ...(booking.status === 'completed'
+                        ? [
+                            { label: t('booking.reviewPayment'), href: `/admin/payments?booking=${booking.id}` },
+                            { label: t('booking.reviewPickup'), href: `/admin/pickup?booking=${booking.id}` },
+                            { label: t('booking.reviewReturn'), href: `/admin/returns?booking=${booking.id}` },
+                          ]
+                        : []),
+                      {
+                        label: t('bookingOps.actions.requestDeposit'),
+                        disabled: !canRequestDeposit(booking),
+                        onSelect: () => { void requestDeposit(booking); },
+                      },
+                      {
+                        label: t('bookingOps.actions.confirmBooking'),
+                        disabled: booking.status === 'cancelled' || booking.status === 'completed',
+                        onSelect: () => { void confirmBooking(booking); },
+                      },
+                      ...(booking.remaining > 0 ? [{ label: t('bookingOps.actions.collectPayment'), href: `/admin/payments?booking=${booking.id}` }] : []),
+                      { label: t('bookingOps.actions.pickupDesk'), href: `/admin/pickup?booking=${booking.id}` },
+                      { label: t('bookingOps.actions.returnDesk'), href: `/admin/returns?booking=${booking.id}` },
+                      {
+                        label: t('bookingOps.actions.cancel'),
+                        disabled: booking.status === 'cancelled' || booking.status === 'completed',
+                        tone: 'danger',
+                        onSelect: () => { void cancelBooking(booking); },
+                      },
+                    ]}
+                  />
                 </div>,
               ])}
+            />
+            <PaginationControls
+              page={meta.page}
+              limit={meta.limit}
+              total={meta.total}
+              totalPages={meta.totalPages}
+              hasNextPage={meta.hasNextPage}
+              hasPreviousPage={meta.hasPreviousPage}
+              onPageChange={setPage}
+              onLimitChange={setLimit}
             />
           </SectionCard>
 
@@ -473,6 +593,7 @@ export default function BookingsPage() {
 
                   <SectionCard title={t('bookingOps.detail.productSection')} description={t('bookingOps.detail.productDesc')} className="shadow-none">
                     <DataTable
+                      tableClassName="min-w-[720px]"
                       columns={[t('bookingOps.columns.product'), t('bookingOps.columns.variant'), t('bookingOps.columns.item'), t('bookingOps.columns.total')]}
                       rows={(active.items.length ? active.items : [{ product: { name: active.product }, variant: { name: active.variant }, inventoryItem: { serialNumber: active.itemCode }, pricePerDay: active.basePrice }]).map((item: any) => [
                         item.product?.name ?? active.product,
@@ -539,6 +660,7 @@ export default function BookingsPage() {
                       items={(active.timeline.length ? active.timeline : [{ time: '-', title: 'bookingOps.timeline.created', detail: active.customer }]).map((item) => ({
                         ...item,
                         title: t(item.title),
+                        detail: item.detail === 'picked_up' || item.detail === 'returned' ? t(`booking.status.${item.detail}`) : item.detail,
                       }))}
                     />
                   </SectionCard>
@@ -549,6 +671,14 @@ export default function BookingsPage() {
         </WorkspaceLayout>
       </div>
     </>
+  );
+}
+
+export default function BookingsPage() {
+  return (
+    <Suspense fallback={null}>
+      <BookingsPageContent />
+    </Suspense>
   );
 }
 

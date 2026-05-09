@@ -18,6 +18,7 @@ import {
   type FooterLinkSetting,
   type NavItemSetting,
 } from '@/lib/admin/client-settings';
+import { siteSettingsApi } from '@/lib/api';
 import { useI18n } from '@/hooks/useI18n';
 
 const STORAGE_DRAFT_KEY = 'rental-fashion.client-settings.draft.v1';
@@ -468,6 +469,7 @@ function PreviewPanel({
       </div>
 
       <div className="bg-[rgb(var(--surface-3))]/70 p-4">
+        {/* Intentional storefront preview surface: uses paper-like white/black values to simulate the client-facing site, not the admin chrome. */}
         <div className={cn('overflow-hidden rounded-[22px] border border-[rgb(var(--surface-border))] bg-white shadow-[var(--shadow-panel)] transition-all duration-300', deviceConfig.widthClass)}>
           <div className="flex items-center gap-1.5 border-b border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-4))] px-4 py-3">
             <span className="h-2.5 w-2.5 rounded-full bg-[rgb(var(--danger))]/60" />
@@ -660,7 +662,8 @@ function VersionHistoryDrawer({
       <button
         type="button"
         aria-label={t('clientSettings.closeVersionHistory')}
-        className="absolute inset-0 bg-[rgb(var(--overlay))] backdrop-blur-sm"
+        className="absolute inset-0 backdrop-blur-sm"
+        style={{ backgroundColor: 'rgb(var(--overlay) / 0.52)' }}
         onClick={onClose}
       />
       <aside className="absolute right-0 top-0 flex h-full w-full max-w-[520px] flex-col border-l border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-2))] shadow-[var(--shadow-float)]">
@@ -739,16 +742,32 @@ export default function ClientSettingsPage() {
   const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
-    const storedDraft = window.localStorage.getItem(STORAGE_DRAFT_KEY);
-    const storedPublished = window.localStorage.getItem(STORAGE_PUBLISHED_KEY);
-    const storedHistory = window.localStorage.getItem(STORAGE_HISTORY_KEY);
-    const nextDraft = storedDraft ? (JSON.parse(storedDraft) as ClientSettings) : cloneSettings();
-    const nextPublished = storedPublished ? (JSON.parse(storedPublished) as ClientSettings) : cloneSettings();
-    const nextHistory = storedHistory ? (JSON.parse(storedHistory) as ClientSettingsVersion[]) : defaultClientSettingsVersions;
-    setDraft(nextDraft);
-    setSavedDraft(nextDraft);
-    setPublished(nextPublished);
-    setVersionHistory(nextHistory);
+    const bootstrap = async () => {
+      const storedDraft = window.localStorage.getItem(STORAGE_DRAFT_KEY);
+      const storedPublished = window.localStorage.getItem(STORAGE_PUBLISHED_KEY);
+      const storedHistory = window.localStorage.getItem(STORAGE_HISTORY_KEY);
+      const localDraft = storedDraft ? (JSON.parse(storedDraft) as ClientSettings) : cloneSettings();
+      const localPublished = storedPublished ? (JSON.parse(storedPublished) as ClientSettings) : cloneSettings();
+      const nextHistory = storedHistory ? (JSON.parse(storedHistory) as ClientSettingsVersion[]) : defaultClientSettingsVersions;
+
+      try {
+        const response = await siteSettingsApi.getClient();
+        const remotePublished = cloneSettings(response.data as ClientSettings);
+        setDraft(storedDraft ? localDraft : remotePublished);
+        setSavedDraft(storedDraft ? localDraft : remotePublished);
+        setPublished(remotePublished);
+        setVersionHistory(nextHistory);
+        window.localStorage.setItem(STORAGE_PUBLISHED_KEY, JSON.stringify(remotePublished));
+      } catch (error) {
+        console.error(error);
+        setDraft(localDraft);
+        setSavedDraft(localDraft);
+        setPublished(localPublished);
+        setVersionHistory(nextHistory);
+      }
+    };
+
+    void bootstrap();
   }, []);
 
   const hasUnsavedChanges = useMemo(() => !sameSettings(draft, savedDraft), [draft, savedDraft]);
@@ -775,7 +794,7 @@ export default function ClientSettingsPage() {
     const next = {
       ...draft,
       updatedAt: new Date().toISOString(),
-      updatedBy: 'Linh Nguyen',
+      updatedBy: 'System',
     };
     setDraft(next);
     setSavedDraft(next);
@@ -783,13 +802,13 @@ export default function ClientSettingsPage() {
     setNotice(t('clientSettings.savedNotice'));
   };
 
-  const publish = () => {
+  const publish = async () => {
     const previousPublished = cloneSettings(published);
     const next = {
       ...draft,
       updatedAt: new Date().toISOString(),
       publishedAt: new Date().toISOString(),
-      updatedBy: 'Linh Nguyen',
+      updatedBy: 'System',
     };
     const nextVersion = makeVersion({
       settings: next,
@@ -801,14 +820,21 @@ export default function ClientSettingsPage() {
         : t('clientSettings.publishedNoDifferences'),
     });
     const nextHistory = [nextVersion, ...versionHistory].slice(0, 20);
-    setDraft(next);
-    setSavedDraft(next);
-    setPublished(next);
-    setVersionHistory(nextHistory);
-    window.localStorage.setItem(STORAGE_DRAFT_KEY, JSON.stringify(next));
-    window.localStorage.setItem(STORAGE_PUBLISHED_KEY, JSON.stringify(next));
-    window.localStorage.setItem(STORAGE_HISTORY_KEY, JSON.stringify(nextHistory));
-    setNotice(t('clientSettings.publishedNotice'));
+
+    try {
+      await siteSettingsApi.updateClient(next);
+      setDraft(next);
+      setSavedDraft(next);
+      setPublished(next);
+      setVersionHistory(nextHistory);
+      window.localStorage.setItem(STORAGE_DRAFT_KEY, JSON.stringify(next));
+      window.localStorage.setItem(STORAGE_PUBLISHED_KEY, JSON.stringify(next));
+      window.localStorage.setItem(STORAGE_HISTORY_KEY, JSON.stringify(nextHistory));
+      setNotice(t('clientSettings.publishedNotice'));
+    } catch (error) {
+      console.error(error);
+      setNotice('Publish failed. Please retry.');
+    }
   };
 
   const restoreDefaults = () => {
@@ -825,7 +851,7 @@ export default function ClientSettingsPage() {
     const restored = {
       ...cloneSettings(version.settings),
       updatedAt: new Date().toISOString(),
-      updatedBy: 'Linh Nguyen',
+      updatedBy: 'System',
       publishedAt: savedDraft.publishedAt,
     };
     setDraft(restored);

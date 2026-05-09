@@ -52,7 +52,7 @@ function leadNextStepKey(status: string) {
   return 'leadOps.next.recover';
 }
 
-function deadlineText(value?: string, fallbackMs = 0, overdueLabel = 'quá hạn') {
+function deadlineText(value: string | undefined, fallbackMs: number, overdueLabel: string) {
   const target = value ? new Date(value).getTime() : Date.now() + fallbackMs;
   const diff = target - Date.now();
   const absMinutes = Math.ceil(Math.abs(diff) / 60000);
@@ -62,17 +62,17 @@ function deadlineText(value?: string, fallbackMs = 0, overdueLabel = 'quá hạn
   return diff >= 0 ? label : `${label} ${overdueLabel}`;
 }
 
-function leadFromApi(row: any): LeadRow {
+function leadFromApi(row: any, labels: { unknownCustomer: string; unassigned: string; fallbackRequest: string }): LeadRow {
   return {
     id: row.id,
-    customer: row.customer?.name ?? row.customer ?? row.title ?? 'Khách chưa xác định',
+    customer: row.customer?.name ?? row.customer ?? row.title ?? labels.unknownCustomer,
     email: row.customer?.email ?? row.email ?? '-',
     phone: row.customer?.phone ?? row.phone ?? '-',
     source: row.source ?? 'web',
     status: normalizeStatus(row.status),
-    request: row.notes ?? row.requestedLook ?? row.request ?? 'Nhu cầu thuê chưa có mô tả',
+    request: row.notes ?? row.requestedLook ?? row.request ?? labels.fallbackRequest,
     budget: Number(row.quotedPrice ?? row.budget ?? 0),
-    owner: row.assignedTo?.fullName ?? row.staff ?? 'Chưa phân công',
+    owner: row.assignedTo?.fullName ?? row.staff ?? labels.unassigned,
     notes: row.notes,
     createdAt: row.createdAt,
     contactDeadlineAt: row.contactDeadlineAt,
@@ -97,7 +97,12 @@ function paymentFromApi(row: any): PaymentRow {
 
 export function LeadOperationsWorkbench() {
   const { t } = useI18n();
-  const [rows, setRows] = useState<LeadRow[]>(demoLeads.map(leadFromApi));
+  const leadLabels = useMemo(() => ({
+    unknownCustomer: t('leadOps.fallback.unknownCustomer'),
+    unassigned: t('lead.unassigned'),
+    fallbackRequest: t('lead.rentalRequest'),
+  }), [t]);
+  const [rows, setRows] = useState<LeadRow[]>(demoLeads.map((row) => leadFromApi(row, leadLabels)));
   const [activeId, setActiveId] = useState(demoLeads[0]?.id ?? '');
   const [loading, setLoading] = useState(true);
   const [actionBusy, setActionBusy] = useState(false);
@@ -119,12 +124,12 @@ export function LeadOperationsWorkbench() {
     setError(null);
     try {
       const response = await leadsApi.getAll();
-      const next = (response.data ?? []).map(leadFromApi);
-      setRows(next.length ? next : demoLeads.map(leadFromApi));
+      const next = (response.data ?? []).map((row: any) => leadFromApi(row, leadLabels));
+      setRows(next.length ? next : demoLeads.map((row) => leadFromApi(row, leadLabels)));
       setActiveId((current) => next.find((row: LeadRow) => row.id === current)?.id ?? next[0]?.id ?? demoLeads[0]?.id ?? '');
     } catch (err: any) {
       setError(err?.response?.data?.message ?? t('leadOps.errors.loadFallback'));
-      setRows(demoLeads.map(leadFromApi));
+      setRows(demoLeads.map((row) => leadFromApi(row, leadLabels)));
       setActiveId(demoLeads[0]?.id ?? '');
     } finally {
       setLoading(false);
@@ -372,7 +377,7 @@ export function PaymentOperationsWorkbench() {
           <>
             <RailSection title={t('paymentOps.actions.panel')}>
               <Link className="button-primary w-full text-center" href={`/admin/bookings/${active.bookingId}`}>{t('paymentOps.actions.openBooking')}</Link>
-              <Link className="button-secondary w-full text-center" href={`/admin/payments/from-booking/${active.bookingId}`}>{t('payment.fromBooking.amountDue')}</Link>
+              <Link className="button-secondary w-full text-center" href={`/admin/payments?booking=${active.bookingId}`}>{t('payment.fromBooking.amountDue')}</Link>
               <AdminButton variant="secondary" className="w-full" onClick={processActive} loading={actionBusy}>{t('paymentOps.actions.markCompleted')}</AdminButton>
               <AdminButton variant="secondary" className="w-full" onClick={printActiveReceipt} loading={actionBusy}>{t('receipt.printBill')}</AdminButton>
             </RailSection>

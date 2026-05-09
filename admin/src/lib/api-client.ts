@@ -30,6 +30,10 @@ function clearAuthAndRedirect() {
   }
 }
 
+function extractPayload<T = any>(responseData: any): T {
+  return responseData?.data ?? responseData;
+}
+
 async function refreshAccessToken() {
   const refreshToken =
     typeof window !== 'undefined' ? localStorage.getItem('refreshToken') : null;
@@ -45,7 +49,7 @@ async function refreshAccessToken() {
         headers: { 'Content-Type': 'application/json' },
       })
       .then((response) => {
-        const nextAccessToken = response.data.accessToken;
+        const nextAccessToken = extractPayload<{ accessToken: string }>(response.data).accessToken;
         useAuthStore.getState().setAccessToken(nextAccessToken);
         return nextAccessToken;
       })
@@ -83,6 +87,10 @@ adminApiClient.interceptors.response.use(
     const originalRequest = error.config as RetryableRequestConfig | undefined;
     const requestPath = originalRequest?.url ?? '';
     const isRefreshRequest = requestPath.includes(REFRESH_ENDPOINT);
+
+    if (status === 403 && process.env.NODE_ENV !== 'production') {
+      console.warn('[api] 403 Forbidden', requestPath, error.response?.data);
+    }
 
     if (status !== 401 || !originalRequest || originalRequest._retry || isRefreshRequest) {
       if (status === 401 && isRefreshRequest) {

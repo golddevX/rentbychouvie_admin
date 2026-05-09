@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState, type InputHTMLAttributes } from 'react';
+import { useI18n } from '@/hooks/useI18n';
 import { AdminButton, AdminCard, AdminInput, AdminModal, cn } from './primitives';
 
 export type LeadProductVariantOption = {
@@ -15,18 +16,13 @@ export type LeadProductOption = {
   id: string;
   name: string;
   price: number;
+  productValue?: number;
+  rentalPrice?: number;
   imageUrl?: string;
+  qrCode?: string;
+  status?: string;
   variants: LeadProductVariantOption[];
 };
-
-export type LeadInventoryItemOption = {
-  id: string;
-  productId: string;
-  variantId?: string;
-  status?: string;
-};
-
-type InventoryState = 'available' | 'limited' | 'unavailable';
 
 const COLOR_MAP: Record<string, string> = {
   black: '#161616',
@@ -91,34 +87,6 @@ export function resolveColorSwatch(color?: string | null) {
   return `hsl(${hue} 42% 62%)`;
 }
 
-function inventoryState(count: number): InventoryState {
-  if (count <= 0) return 'unavailable';
-  if (count <= 2) return 'limited';
-  return 'available';
-}
-
-function inventoryLabel(state: InventoryState) {
-  if (state === 'available') return 'Available';
-  if (state === 'limited') return 'Limited';
-  return 'Unavailable';
-}
-
-function productImage(product?: LeadProductOption, variant?: LeadProductVariantOption) {
-  return variant?.imageUrls?.[0] ?? product?.imageUrl;
-}
-
-function productInventoryCount(
-  inventoryItems: LeadInventoryItemOption[],
-  productId: string,
-  variantId?: string,
-) {
-  return inventoryItems.filter((item) => {
-    if (item.productId !== productId) return false;
-    if (variantId && item.variantId !== variantId) return false;
-    return normalizeKey(item.status) === 'available';
-  }).length;
-}
-
 function SearchIcon() {
   return (
     <svg viewBox="0 0 20 20" fill="none" className="h-4 w-4" aria-hidden="true">
@@ -159,13 +127,14 @@ function RulerIcon() {
 export function MoneyInput({
   value,
   onValueChange,
-  placeholder = 'Nhập số tiền',
+  placeholder,
   className,
   ...props
 }: Omit<InputHTMLAttributes<HTMLInputElement>, 'type' | 'value' | 'onChange'> & {
   value?: number | null;
   onValueChange: (value: number | null) => void;
 }) {
+  const { t } = useI18n();
   const [focused, setFocused] = useState(false);
   const [rawValue, setRawValue] = useState('');
 
@@ -180,7 +149,7 @@ export function MoneyInput({
       className={className}
       inputClassName="text-right tabular-nums"
       inputMode="numeric"
-      placeholder={placeholder}
+      placeholder={placeholder ?? t('leadUi.moneyInputPlaceholder')}
       value={focused ? rawValue : (value ? formatVndAmount(value) : '')}
       onFocus={(event) => {
         setFocused(true);
@@ -216,6 +185,7 @@ export function ColorPicker({
   value?: string;
   onChange: (value: string) => void;
 }) {
+  const { t } = useI18n();
   return (
     <div className="grid gap-3">
       <div className="flex items-start justify-between gap-3">
@@ -254,7 +224,7 @@ export function ColorPicker({
           );
         }) : (
           <div className="rounded-[18px] border border-dashed border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-3))]/72 px-4 py-3 text-sm text-[rgb(var(--text-secondary))]">
-            Chưa có màu khả dụng cho sản phẩm này.
+            {t('leadUi.emptyColors')}
           </div>
         )}
       </div>
@@ -275,6 +245,7 @@ export function SizeSelector({
   value?: string;
   onChange: (value: string) => void;
 }) {
+  const { t } = useI18n();
   return (
     <div className="grid gap-3">
       <div className="flex items-start justify-between gap-3">
@@ -308,7 +279,7 @@ export function SizeSelector({
           );
         }) : (
           <div className="rounded-[18px] border border-dashed border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-3))]/72 px-4 py-3 text-sm text-[rgb(var(--text-secondary))]">
-            Chưa có size khả dụng cho sản phẩm này.
+            {t('leadUi.emptySizes')}
           </div>
         )}
       </div>
@@ -316,44 +287,35 @@ export function SizeSelector({
   );
 }
 
-function InventoryPill({ count }: { count: number }) {
-  const state = inventoryState(count);
+function ProductStatusBadge({ status }: { status?: string }) {
+  const normalized = normalizeKey(status) || 'available';
   return (
     <span
       className={cn(
         'inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.16em]',
-        state === 'available' && 'border-[rgb(var(--success))]/18 bg-[rgb(var(--success))]/10 text-[rgb(var(--success))]',
-        state === 'limited' && 'border-[rgb(var(--warning))]/18 bg-[rgb(var(--warning))]/11 text-[rgb(var(--warning))]',
-        state === 'unavailable' && 'border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-3))] text-[rgb(var(--text-muted))]',
+        normalized === 'available' && 'border-[rgb(var(--success))]/18 bg-[rgb(var(--success))]/10 text-[rgb(var(--success))]',
+        normalized === 'reserved' && 'border-[rgb(var(--warning))]/18 bg-[rgb(var(--warning))]/11 text-[rgb(var(--warning))]',
+        normalized === 'rented' && 'border-[rgb(var(--info))]/18 bg-[rgb(var(--info))]/10 text-[rgb(var(--info))]',
+        (normalized === 'maintenance' || normalized === 'damaged') && 'border-[rgb(var(--danger))]/18 bg-[rgb(var(--danger))]/10 text-[rgb(var(--danger))]',
       )}
     >
-      <span className={cn(
-        'h-2 w-2 rounded-full',
-        state === 'available' && 'bg-[rgb(var(--success))]',
-        state === 'limited' && 'bg-[rgb(var(--warning))]',
-        state === 'unavailable' && 'bg-[rgb(var(--text-muted))]',
-      )} />
-      {inventoryLabel(state)}
+      <span className="h-2 w-2 rounded-full bg-current" />
+      {normalized}
     </span>
   );
 }
 
 export function ProductCardSelect({
   products,
-  inventoryItems,
   selectedProductId,
-  selectedVariantId,
-  selectedColor,
-  selectedSize,
   onSelectProduct,
-  buttonLabel = 'Đổi sản phẩm',
-  title = 'Sản phẩm',
-  description = 'Chọn sản phẩm chính trước, sau đó tinh chỉnh màu, size và item cụ thể.',
-  modalTitle = 'Chọn sản phẩm',
+  buttonLabel,
+  title,
+  description,
+  modalTitle,
   disabled = false,
 }: {
   products: LeadProductOption[];
-  inventoryItems: LeadInventoryItemOption[];
   selectedProductId?: string;
   selectedVariantId?: string;
   selectedColor?: string;
@@ -365,6 +327,7 @@ export function ProductCardSelect({
   modalTitle?: string;
   disabled?: boolean;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
 
@@ -372,38 +335,29 @@ export function ProductCardSelect({
     () => products.find((product) => product.id === selectedProductId),
     [products, selectedProductId],
   );
-  const selectedVariant = useMemo(
-    () => selectedProduct?.variants.find((variant) => variant.id === selectedVariantId),
-    [selectedProduct, selectedVariantId],
-  );
 
   const visibleProducts = useMemo(() => {
     const normalized = normalizeKey(query);
-    return products.filter((product) => {
-      if (!normalized) return true;
-      const haystacks = [
-        product.name,
-        ...product.variants.flatMap((variant) => [variant.name, variant.size, variant.color]),
-      ];
-      return haystacks.some((value) => normalizeKey(value).includes(normalized));
-    });
+    return products.filter((product) => !normalized || normalizeKey(product.name).includes(normalized));
   }, [products, query]);
 
-  const selectedInventoryCount = selectedProduct
-    ? productInventoryCount(inventoryItems, selectedProduct.id, selectedVariantId)
-    : 0;
-  const selectedImage = productImage(selectedProduct, selectedVariant);
+  const productValue = selectedProduct?.productValue ?? selectedProduct?.price ?? 0;
+  const rentalPrice = selectedProduct?.rentalPrice ?? selectedProduct?.price ?? 0;
+  const resolvedButtonLabel = buttonLabel ?? t('leadUi.changeProduct');
+  const resolvedTitle = title ?? t('leadUi.productTitle');
+  const resolvedDescription = description ?? t('leadFlow.helper.productOnlySelection');
+  const resolvedModalTitle = modalTitle ?? t('leadUi.productModalTitle');
 
   return (
     <>
       <div className="grid gap-4">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-sm font-semibold text-[rgb(var(--text-primary))]">{title}</p>
-            <p className="mt-1 text-sm leading-6 text-[rgb(var(--text-secondary))]">{description}</p>
+            <p className="text-sm font-semibold text-[rgb(var(--text-primary))]">{resolvedTitle}</p>
+            <p className="mt-1 text-sm leading-6 text-[rgb(var(--text-secondary))]">{resolvedDescription}</p>
           </div>
           <AdminButton variant="secondary" type="button" onClick={() => setOpen(true)} disabled={disabled}>
-            {buttonLabel}
+            {resolvedButtonLabel}
           </AdminButton>
         </div>
 
@@ -414,8 +368,8 @@ export function ProductCardSelect({
           >
             <div className="flex flex-col gap-4 md:flex-row">
               <div className="relative aspect-[1/1] w-full overflow-hidden rounded-[24px] border border-[rgb(var(--surface-border))]/75 bg-[rgb(var(--surface-3))] md:w-[144px]">
-                {selectedImage ? (
-                  <img src={selectedImage} alt={selectedProduct.name} className="h-full w-full object-cover" />
+                {selectedProduct.imageUrl ? (
+                  <img src={selectedProduct.imageUrl} alt={selectedProduct.name} className="h-full w-full object-cover" />
                 ) : (
                   <div className="grid h-full w-full place-items-center text-[rgb(var(--text-muted))]">
                     <PackageIcon />
@@ -426,35 +380,32 @@ export function ProductCardSelect({
               <div className="min-w-0 flex-1">
                 <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                   <div className="min-w-0">
-                    <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[rgb(var(--text-muted))]">Selected product</p>
+                    <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[rgb(var(--text-muted))]">{t('leadUi.selectedProduct')}</p>
                     <h3 className="mt-2 truncate text-2xl font-semibold tracking-[-0.035em] text-[rgb(var(--text-primary))]">
                       {selectedProduct.name}
                     </h3>
                     <p className="mt-2 text-sm leading-6 text-[rgb(var(--text-secondary))]">
-                      {formatVndAmount(selectedProduct.price)}
+                      {t('leadUi.productValue')} {formatVndAmount(productValue)}
+                    </p>
+                    <p className="text-sm leading-6 text-[rgb(var(--text-secondary))]">
+                      {t('leadUi.rentalPrice')} {formatVndAmount(rentalPrice)}
                     </p>
                   </div>
-                  <InventoryPill count={selectedInventoryCount} />
+                  <ProductStatusBadge status={selectedProduct.status} />
                 </div>
 
                 <div className="mt-4 grid gap-3 sm:grid-cols-3">
                   <div className="rounded-[20px] border border-[rgb(var(--surface-border))]/75 bg-[rgb(var(--surface-3))]/72 px-4 py-3">
-                    <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">Variant</p>
-                    <p className="mt-2 text-sm font-semibold text-[rgb(var(--text-primary))]">{selectedVariant?.name ?? 'Chưa chốt'}</p>
+                    <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">{t('scan.qrCode')}</p>
+                    <p className="mt-2 text-sm font-semibold text-[rgb(var(--text-primary))]">{selectedProduct.qrCode || selectedProduct.id}</p>
                   </div>
                   <div className="rounded-[20px] border border-[rgb(var(--surface-border))]/75 bg-[rgb(var(--surface-3))]/72 px-4 py-3">
-                    <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">Size</p>
-                    <p className="mt-2 text-sm font-semibold text-[rgb(var(--text-primary))]">{selectedSize || selectedVariant?.size || 'Chưa chọn'}</p>
+                    <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">{t('leadUi.rentalPrice')}</p>
+                    <p className="mt-2 text-sm font-semibold text-[rgb(var(--text-primary))]">{formatVndAmount(rentalPrice)}</p>
                   </div>
                   <div className="rounded-[20px] border border-[rgb(var(--surface-border))]/75 bg-[rgb(var(--surface-3))]/72 px-4 py-3">
-                    <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">Color</p>
-                    <div className="mt-2 flex items-center gap-2">
-                      <span
-                        className="h-4 w-4 rounded-full border border-black/5"
-                        style={{ background: resolveColorSwatch(selectedColor || selectedVariant?.color) }}
-                      />
-                      <p className="text-sm font-semibold text-[rgb(var(--text-primary))]">{selectedColor || selectedVariant?.color || 'Chưa chọn'}</p>
-                    </div>
+                    <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">{t('leadUi.productValue')}</p>
+                    <p className="mt-2 text-sm font-semibold text-[rgb(var(--text-primary))]">{formatVndAmount(productValue)}</p>
                   </div>
                 </div>
               </div>
@@ -467,9 +418,9 @@ export function ProductCardSelect({
                 <PackageIcon />
               </span>
               <div>
-                <p className="text-sm font-semibold text-[rgb(var(--text-primary))]">Chưa có sản phẩm được chọn</p>
+                <p className="text-sm font-semibold text-[rgb(var(--text-primary))]">{t('leadUi.emptySelectionTitle')}</p>
                 <p className="mt-1 text-sm leading-6 text-[rgb(var(--text-secondary))]">
-                  Bắt đầu bằng cách mở modal tìm kiếm để chọn sản phẩm phù hợp cho lead này.
+                  {t('leadUi.emptySelectionDescription')}
                 </p>
               </div>
             </div>
@@ -480,11 +431,11 @@ export function ProductCardSelect({
       <AdminModal
         open={open}
         onClose={() => setOpen(false)}
-        title={modalTitle}
+        title={resolvedModalTitle}
         size="xl"
         footer={(
           <AdminButton variant="secondary" type="button" onClick={() => setOpen(false)}>
-            Đóng
+            {t('common.close')}
           </AdminButton>
         )}
       >
@@ -492,21 +443,15 @@ export function ProductCardSelect({
           <AdminInput
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Tìm theo tên sản phẩm, màu hoặc size"
+            placeholder={t('leadUi.searchPlaceholder')}
             leftIcon={<SearchIcon />}
           />
 
           <div className="grid gap-4 lg:grid-cols-2">
             {visibleProducts.map((product) => {
               const active = product.id === selectedProductId;
-              const variants = product.variants;
-              const totalAvailable = productInventoryCount(inventoryItems, product.id);
-              const sizeSummary = Array.from(new Set(variants.map((variant) => variant.size).filter(Boolean) as string[])).slice(0, 4);
-              const colorSummary = Array.from(new Set(variants.map((variant) => variant.color).filter(Boolean) as string[])).slice(0, 5);
-              const previewVariant = active
-                ? variants.find((variant) => variant.id === selectedVariantId) ?? variants[0]
-                : variants[0];
-              const image = productImage(product, previewVariant);
+              const productValueValue = product.productValue ?? product.price;
+              const rentalPriceValue = product.rentalPrice ?? product.price;
 
               return (
                 <button
@@ -524,8 +469,8 @@ export function ProductCardSelect({
                 >
                   <div className="grid gap-4 p-4 md:grid-cols-[132px_minmax(0,1fr)]">
                     <div className="relative aspect-[1/1] overflow-hidden rounded-[22px] border border-[rgb(var(--surface-border))]/75 bg-[rgb(var(--surface-3))]">
-                      {image ? (
-                        <img src={image} alt={product.name} className="h-full w-full object-cover" />
+                      {product.imageUrl ? (
+                        <img src={product.imageUrl} alt={product.name} className="h-full w-full object-cover" />
                       ) : (
                         <div className="grid h-full w-full place-items-center text-[rgb(var(--text-muted))]">
                           <PackageIcon />
@@ -537,33 +482,20 @@ export function ProductCardSelect({
                       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                         <div className="min-w-0">
                           <p className="truncate text-lg font-semibold tracking-[-0.03em] text-[rgb(var(--text-primary))]">{product.name}</p>
-                          <p className="mt-1 text-sm text-[rgb(var(--text-secondary))]">{formatVndAmount(product.price)}</p>
+                          <p className="mt-1 text-sm text-[rgb(var(--text-secondary))]">{t('leadUi.productValue')} {formatVndAmount(productValueValue)}</p>
+                          <p className="text-sm text-[rgb(var(--text-secondary))]">{t('leadUi.rentalPrice')} {formatVndAmount(rentalPriceValue)}</p>
                         </div>
-                        <InventoryPill count={totalAvailable} />
+                        <ProductStatusBadge status={product.status} />
                       </div>
 
                       <div className="mt-4 grid gap-3 sm:grid-cols-2">
                         <div className="rounded-[18px] border border-[rgb(var(--surface-border))]/75 bg-[rgb(var(--surface-3))]/72 px-3.5 py-3">
-                          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">Sizes</p>
-                          <div className="mt-2 flex flex-wrap gap-2">
-                            {sizeSummary.length ? sizeSummary.map((size) => (
-                              <span key={size} className="rounded-full border border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-2))] px-2.5 py-1 text-xs font-semibold text-[rgb(var(--text-secondary))]">
-                                {size}
-                              </span>
-                            )) : (
-                              <span className="text-xs text-[rgb(var(--text-secondary))]">Không có size</span>
-                            )}
-                          </div>
+                          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">{t('scan.qrCode')}</p>
+                          <p className="mt-2 text-xs font-semibold text-[rgb(var(--text-primary))]">{product.qrCode || product.id}</p>
                         </div>
                         <div className="rounded-[18px] border border-[rgb(var(--surface-border))]/75 bg-[rgb(var(--surface-3))]/72 px-3.5 py-3">
-                          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">Colors</p>
-                          <div className="mt-2 flex flex-wrap gap-2">
-                            {colorSummary.length ? colorSummary.map((color) => (
-                              <span key={color} className="inline-flex h-6 w-6 rounded-full border border-black/5" style={{ background: resolveColorSwatch(color) }} title={color} />
-                            )) : (
-                              <span className="text-xs text-[rgb(var(--text-secondary))]">Không có màu</span>
-                            )}
-                          </div>
+                          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">{t('common.status')}</p>
+                          <p className="mt-2 text-xs font-semibold capitalize text-[rgb(var(--text-primary))]">{product.status || 'available'}</p>
                         </div>
                       </div>
                     </div>
@@ -575,9 +507,9 @@ export function ProductCardSelect({
 
           {!visibleProducts.length ? (
             <div className="rounded-[24px] border border-dashed border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-3))]/72 p-8 text-center">
-              <p className="text-base font-semibold text-[rgb(var(--text-primary))]">Không tìm thấy sản phẩm phù hợp</p>
+              <p className="text-base font-semibold text-[rgb(var(--text-primary))]">{t('leadUi.noResultsTitle')}</p>
               <p className="mt-2 text-sm leading-6 text-[rgb(var(--text-secondary))]">
-                Thử tên gọi khác, hoặc tìm theo size và màu khách đang quan tâm.
+                {t('leadUi.noResultsDescription')}
               </p>
             </div>
           ) : null}

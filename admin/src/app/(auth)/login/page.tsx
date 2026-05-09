@@ -33,11 +33,11 @@ export default function LoginPage() {
     try {
       setError(null);
       const response = await authApi.login(data.email, data.password);
-      login(response.data.accessToken, response.data.refreshToken, response.data.user);
+      const payload = response.data?.data ?? response.data;
+      login(payload.accessToken, payload.refreshToken, payload.user);
       router.push('/admin');
     } catch (err) {
       setError(t('auth.invalidCredentials'));
-      console.error(err);
     }
   };
 

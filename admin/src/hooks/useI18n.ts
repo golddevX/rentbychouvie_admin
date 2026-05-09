@@ -1,3 +1,4 @@
+import { useCallback, useMemo } from 'react';
 import { useI18nStore } from '@/store/i18n.store';
 import { en } from '@/locales/en';
 import { vi } from '@/locales/vi';
@@ -14,9 +15,18 @@ const getNestedValue = (obj: any, path: string): string | undefined => {
 export const useI18n = () => {
   const locale = useI18nStore((state) => state.locale);
   const setLocale = useI18nStore((state) => state.setLocale);
-  const dictionary = (dictionaries[locale] || dictionaries.vi) as Dictionary;
+  const dictionary = useMemo(
+    () => (dictionaries[locale] || dictionaries.vi) as Dictionary,
+    [locale],
+  );
+  const hasTranslation = useCallback(
+    (key: string) => (
+      getNestedValue(dictionary, key) !== undefined || getNestedValue(dictionaries.vi, key) !== undefined
+    ),
+    [dictionary],
+  );
 
-  const t = (key: string, params?: Record<string, string | number>): string => {
+  const t = useCallback((key: string, params?: Record<string, string | number>): string => {
     let text = getNestedValue(dictionary, key) || getNestedValue(dictionaries.vi, key);
 
     if (text === undefined) {
@@ -35,7 +45,7 @@ export const useI18n = () => {
     }
 
     return text as string;
-  };
+  }, [dictionary]);
 
-  return { t, locale, setLocale };
+  return { t, hasTranslation, locale, setLocale };
 };

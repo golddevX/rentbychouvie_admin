@@ -131,7 +131,7 @@ export function PermissionMatrixModule({
               </span>
               <span className="flex shrink-0 items-center gap-2">
                 <PermissionRiskBadge permission={permission} />
-                <span className={cn('grid h-6 w-6 place-items-center rounded-full border', checked ? 'border-[rgb(var(--accent-solid))] bg-[rgb(var(--accent-solid))] text-white' : 'border-[rgb(var(--surface-border))] bg-white text-transparent')}>
+                <span className={cn('grid h-6 w-6 place-items-center rounded-full border', checked ? 'border-[rgb(var(--accent-solid))] bg-[rgb(var(--accent-solid))] text-[rgb(var(--button-primary-text))]' : 'border-[rgb(var(--surface-border))] bg-[rgb(var(--surface))] text-transparent')}>
                   on
                 </span>
               </span>

@@ -1,19 +1,23 @@
 'use client';
 
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { leadsApi, usersApi } from '@/lib/api';
 import { can } from '@/lib/admin/permissions';
 import { leads as demoLeads, staff as demoStaff, currency, type Tone } from '@/lib/admin/demo-data';
 import { useI18n } from '@/hooks/useI18n';
+import { useAdminListParams } from '@/hooks/useAdminListParams';
 import { useAuthStore } from '@/store/auth.store';
 import {
+  ActionMenu,
   ControlSurface,
   EmptyState,
   FeedbackPopup,
   InlineAlert,
   KeyValueList,
   PageHeader,
+  PaginationControls,
   PermissionButton,
   RailSection,
   SectionCard,
@@ -23,7 +27,7 @@ import {
   WorkspaceLayout,
 } from './ui';
 import { MoneyInput } from './lead-ui';
-import { AdminBadge, AdminButton, AdminIconButton, AdminInput, AdminModal, AdminSelect, AdminSpinner, cn } from './primitives';
+import { AdminBadge, AdminButton, AdminInput, AdminModal, AdminSelect, AdminSpinner, cn } from './primitives';
 
 type LeadStatus =
   | 'new'
@@ -150,10 +154,10 @@ function leadFromApi(
     inventoryItemLabel: row.inventoryItem?.serialNumber ?? undefined,
     pickupDate: row.pickupDate ?? undefined,
     returnDate: row.returnDate ?? undefined,
-    appointmentId: row.appointment?.id ?? row.appointmentId ?? undefined,
+    appointmentId: normalizeEntityId(row.appointment?.id ?? row.appointmentId),
     appointmentStatus: row.appointment?.status ?? undefined,
     appointmentTime: row.appointment?.scheduledAt ?? row.appointment?.startTime ?? undefined,
-    bookingId: row.booking?.id ?? row.bookingId ?? row.convertedToBookingId ?? undefined,
+    bookingId: normalizeEntityId(row.booking?.id ?? row.bookingId ?? row.convertedToBookingId),
     bookingStatus: row.booking?.status ?? undefined,
     contactDeadlineAt: contactDeadline(row),
     contactedAt: row.contactedAt,
@@ -167,6 +171,14 @@ function leadFromApi(
 
 function lower(value?: string | null) {
   return String(value ?? '').toLowerCase();
+}
+
+function normalizeEntityId(value: unknown) {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 120) return undefined;
+  if (normalized.startsWith('data:') || normalized.startsWith('[') || normalized.includes('base64,')) return undefined;
+  return normalized;
 }
 
 function hasProductSelection(lead: LeadRow) {
@@ -250,14 +262,14 @@ function urgencyScore(lead: LeadRow) {
 }
 
 function nextStepKey(lead: LeadRow) {
-  if (hasBooking(lead)) return 'lead.next_step.open_booking';
-  if (!hasProductSelection(lead)) return 'lead.next_step.select_product';
-  if (lead.status === 'product_selected' || lead.status === 'contacted' || lead.status === 'deposit_expired') return 'lead.next_step.request_deposit';
-  if (lead.status === 'deposit_requested') return 'lead.next_step.waiting_deposit';
-  if (lead.status === 'deposit_received' && !lead.appointmentId) return 'lead.next_step.open_appointment';
-  if (lead.status === 'deposit_received' || lead.status === 'appointment_created') return 'lead.next_step.waiting_appointment_completed';
-  if (lead.status === 'appointment_completed') return 'lead.next_step.open_booking';
-  return 'lead.next_step.call_customer';
+  if (hasBooking(lead)) return 'lead.nextStep.open_booking';
+  if (!hasProductSelection(lead)) return 'lead.nextStep.select_product';
+  if (lead.status === 'product_selected' || lead.status === 'contacted' || lead.status === 'deposit_expired') return 'lead.nextStep.request_deposit';
+  if (lead.status === 'deposit_requested') return 'lead.nextStep.waiting_deposit';
+  if (lead.status === 'deposit_received' && !lead.appointmentId) return 'lead.nextStep.open_appointment';
+  if (lead.status === 'deposit_received' || lead.status === 'appointment_created') return 'lead.nextStep.waiting_appointment_completed';
+  if (lead.status === 'appointment_completed') return 'lead.nextStep.open_booking';
+  return 'lead.nextStep.call_customer';
 }
 
 function buildActionSummary(lead: LeadRow, t: (key: string, params?: Record<string, string | number>) => string) {
@@ -297,46 +309,43 @@ function buildActionSummary(lead: LeadRow, t: (key: string, params?: Record<stri
   };
 }
 
-function EyeIcon() {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" className="h-4 w-4" aria-hidden="true">
-      <path d="M2.75 10S5.5 4.75 10 4.75 17.25 10 17.25 10 14.5 15.25 10 15.25 2.75 10 2.75 10Z" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" />
-      <circle cx="10" cy="10" r="2.25" stroke="currentColor" strokeWidth="1.35" />
-    </svg>
-  );
+function translateLeadSource(
+  source: string,
+  t: (key: string, params?: Record<string, string | number>) => string,
+) {
+  const key = `leadOps.source.${source}`;
+  const translated = t(key);
+  return translated === key ? source : translated;
 }
 
-function PhoneIcon() {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" className="h-4 w-4" aria-hidden="true">
-      <path d="M15.3 12.47c-.86-.09-1.7-.23-2.5-.42a1.26 1.26 0 0 0-1.23.36l-1.09 1.09a14.02 14.02 0 0 1-4-4l1.09-1.09c.33-.33.46-.81.36-1.23a12.52 12.52 0 0 1-.42-2.5A1.25 1.25 0 0 0 6.27 3.5H4.5c-.69 0-1.26.58-1.22 1.27A15.98 15.98 0 0 0 15.23 16.72c.69.04 1.27-.53 1.27-1.22v-1.77a1.25 1.25 0 0 0-1.2-1.26Z" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function ArrowIcon() {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" className="h-4 w-4" aria-hidden="true">
-      <path d="M5 10h10m0 0-4-4m4 4-4 4" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function rowDepositStatus(lead: LeadRow) {
+function rowDepositStatus(
+  lead: LeadRow,
+  t: (key: string, params?: Record<string, string | number>) => string,
+) {
   if (lead.status === 'deposit_expired') return { value: 'deposit_expired', tone: 'danger' as Tone };
   if (hasReceivedDeposit(lead)) return { value: 'deposit_received', tone: 'success' as Tone };
   if (hasRequestedDeposit(lead)) return { value: 'deposit_requested', tone: 'warning' as Tone };
-  return { value: 'not requested', tone: 'neutral' as Tone };
+  return { value: t('leadOps.notRequested'), tone: 'neutral' as Tone };
 }
 
-function rowAppointmentStatus(lead: LeadRow) {
+function rowAppointmentStatus(
+  lead: LeadRow,
+  t: (key: string, params?: Record<string, string | number>) => string,
+) {
   if (lead.appointmentStatus) return { value: lower(lead.appointmentStatus), tone: lead.appointmentId ? 'info' as Tone : 'neutral' as Tone };
-  if (hasReceivedDeposit(lead)) return { value: 'appointment missing', tone: 'warning' as Tone };
-  return { value: 'pending', tone: 'neutral' as Tone };
+  if (hasReceivedDeposit(lead)) return { value: t('leadOps.appointmentMissing'), tone: 'warning' as Tone };
+  return { value: t('lead.flow.pending'), tone: 'neutral' as Tone };
 }
 
 export function LeadManagementScreen() {
   const { t } = useI18n();
+  const searchParams = useSearchParams();
+  const { params, updateParams, setPage, setLimit } = useAdminListParams({
+    page: 1,
+    limit: 20,
+    sortBy: 'createdAt',
+    sortOrder: 'desc',
+  });
   const userRole = useAuthStore((state) => state.user?.role);
   const canManageUsers = can(userRole, 'manage_users');
   const [rows, setRows] = useState<LeadRow[]>(() =>
@@ -351,8 +360,6 @@ export function LeadManagementScreen() {
   const [activeId, setActiveId] = useState(demoLeads[0]?.id ?? '');
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<string | null>(null);
-  const [query, setQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | LeadStatus>('all');
   const [sourceFilter, setSourceFilter] = useState('all');
   const [ownerFilter, setOwnerFilter] = useState('all');
   const [createOpen, setCreateOpen] = useState(false);
@@ -364,6 +371,9 @@ export function LeadManagementScreen() {
   const [createDraft, setCreateDraft] = useState({ name: '', email: '', phone: '', source: 'web', notes: '' });
   const [editDraft, setEditDraft] = useState({ notes: '', quotedPrice: null as number | null });
   const [assignDraft, setAssignDraft] = useState('');
+  const [meta, setMeta] = useState({ page: 1, limit: 20, total: 0, totalPages: 0, hasNextPage: false, hasPreviousPage: false });
+  const query = params.search;
+  const statusFilter = (searchParams.get('status') ?? 'all') as 'all' | LeadStatus;
 
   const active = rows.find((row) => row.id === activeId) ?? rows[0];
 
@@ -371,14 +381,21 @@ export function LeadManagementScreen() {
     setLoading(true);
     setError(null);
     try {
-      const requests: Array<Promise<any>> = [leadsApi.getAll()];
+      const requests: Array<Promise<any>> = [leadsApi.list({
+        page: params.page,
+        limit: params.limit,
+        search: query || undefined,
+        status: statusFilter === 'all' ? undefined : statusFilter.toUpperCase(),
+        sortBy: params.sortBy,
+        sortOrder: params.sortOrder,
+      })];
       if (canManageUsers) {
         requests.push(usersApi.getAll());
       }
       const results = await Promise.allSettled(requests);
       const [leadResponse, userResponse] = results;
       const leadRows = leadResponse.status === 'fulfilled'
-        ? (leadResponse.value.data ?? []).map((row: any) =>
+        ? (leadResponse.value.data?.data ?? []).map((row: any) =>
             leadFromApi(row, {
               unknownCustomer: t('leadOps.fallback.unknownCustomer'),
               unassigned: t('lead.unassigned'),
@@ -389,20 +406,19 @@ export function LeadManagementScreen() {
         ? (userResponse.value.data ?? []).map((user: any) => ({ id: user.id, fullName: user.fullName, email: user.email, role: user.role }))
         : [];
 
-      const nextRows: LeadRow[] = leadRows.length
-        ? leadRows
-        : demoLeads.map((row) =>
-            leadFromApi(row, {
-              unknownCustomer: t('leadOps.fallback.unknownCustomer'),
-              unassigned: t('lead.unassigned'),
-            }),
-          );
+      const nextRows: LeadRow[] = leadRows;
 
       setRows(nextRows);
+      if (leadResponse.status === 'fulfilled') {
+        setMeta(leadResponse.value.data?.meta ?? { page: params.page, limit: params.limit, total: nextRows.length, totalPages: nextRows.length ? 1 : 0, hasNextPage: false, hasPreviousPage: false });
+      }
       setStaffRows(userRows.length ? userRows : demoStaff.map((item) => ({ id: item.id, fullName: item.name, email: item.email, role: item.role })));
       setActiveId((current) => nextRows.find((row) => row.id === current)?.id ?? nextRows[0]?.id ?? '');
       if (leadResponse.status === 'rejected') {
         setError(t('leadOps.errors.loadFallback'));
+      }
+      if (leadResponse.status === 'rejected') {
+        setMeta({ page: 1, limit: demoLeads.length, total: demoLeads.length, totalPages: 1, hasNextPage: false, hasPreviousPage: false });
       }
     } finally {
       setLoading(false);
@@ -411,8 +427,7 @@ export function LeadManagementScreen() {
 
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canManageUsers]);
+  }, [canManageUsers, params.limit, params.page, params.search, params.sortBy, params.sortOrder, statusFilter]);
 
   useEffect(() => {
     if (!active) return;
@@ -426,7 +441,6 @@ export function LeadManagementScreen() {
   const filteredRows = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return rows
-      .filter((lead) => statusFilter === 'all' || lead.status === statusFilter)
       .filter((lead) => sourceFilter === 'all' || lead.source === sourceFilter)
       .filter((lead) => ownerFilter === 'all' || lead.ownerId === ownerFilter || (ownerFilter === 'unassigned' && !lead.ownerId))
       .filter((lead) => {
@@ -441,9 +455,8 @@ export function LeadManagementScreen() {
           lead.notes,
           lead.inventoryItemLabel,
         ].some((value) => String(value ?? '').toLowerCase().includes(normalizedQuery));
-      })
-      .sort((a, b) => urgencyScore(a) - urgencyScore(b));
-  }, [ownerFilter, query, rows, sourceFilter, statusFilter]);
+      });
+  }, [ownerFilter, query, rows, sourceFilter]);
 
   const stats = useMemo(() => {
     const noProduct = rows.filter((lead) => !hasProductSelection(lead)).length;
@@ -587,7 +600,7 @@ export function LeadManagementScreen() {
 
   const timeline = active
     ? [
-        { time: formatDateTime(active.createdAt), title: t('leadOps.timeline.created'), detail: active.source, tone: 'neutral' as Tone },
+        { time: formatDateTime(active.createdAt), title: t('leadOps.timeline.created'), detail: translateLeadSource(active.source, t), tone: 'neutral' as Tone },
         active.contactedAt ? { time: formatDateTime(active.contactedAt), title: t('leadOps.timeline.contacted'), detail: active.owner, tone: 'info' as Tone } : null,
         active.depositRequestedAt ? { time: formatDateTime(active.depositRequestedAt), title: t('leadOps.timeline.depositRequested'), detail: relativeWindow(active.depositDeadlineAt, { fallback: t('leadOps.notSet'), overdue: t('leadOps.overdue'), left: t('leadOps.left') }), tone: 'warning' as Tone } : null,
         active.depositReceivedAt ? { time: formatDateTime(active.depositReceivedAt), title: t('leadOps.timeline.depositReceived'), detail: t('leadOps.timeline.readyForAppointment'), tone: 'success' as Tone } : null,
@@ -646,19 +659,19 @@ export function LeadManagementScreen() {
             {
               label: t('lead.flow.deposit'),
               value: `${stats.waitingDeposit}`,
-              detail: t('lead.next_step.waiting_deposit'),
+              detail: t('lead.nextStep.waiting_deposit'),
               tone: stats.waitingDeposit ? 'warning' : 'neutral',
             },
             {
               label: t('lead.flow.appointment'),
               value: `${stats.waitingAppointment}`,
-              detail: t('lead.next_step.waiting_appointment_completed'),
+              detail: t('lead.nextStep.waiting_appointment_completed'),
               tone: stats.waitingAppointment ? 'info' : 'neutral',
             },
             {
               label: t('lead.flow.booking'),
               value: `${stats.readyBooking}`,
-              detail: t('lead.next_step.open_booking'),
+              detail: t('lead.nextStep.open_booking'),
               tone: stats.readyBooking ? 'success' : 'neutral',
             },
           ]}
@@ -669,10 +682,10 @@ export function LeadManagementScreen() {
             className="md:col-span-2"
             placeholder={t('leadOps.filters.searchPlaceholder')}
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => updateParams({ search: event.target.value }, { resetPage: true })}
           />
 
-          <AdminSelect value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as 'all' | LeadStatus)}>
+          <AdminSelect value={statusFilter} onChange={(event) => updateParams({ status: event.target.value }, { resetPage: true })}>
             {STATUS_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
                 {t(option.labelKey)}
@@ -702,8 +715,7 @@ export function LeadManagementScreen() {
             type="button"
             variant="secondary"
             onClick={() => {
-              setQuery('');
-              setStatusFilter('all');
+              updateParams({ search: '', status: '' }, { resetPage: true });
               setSourceFilter('all');
               setOwnerFilter('all');
             }}
@@ -711,6 +723,17 @@ export function LeadManagementScreen() {
             {t('leadOps.filters.reset')}
           </AdminButton>
         </ControlSurface>
+
+        <PaginationControls
+          page={meta.page}
+          limit={meta.limit}
+          total={meta.total}
+          totalPages={meta.totalPages}
+          hasNextPage={meta.hasNextPage}
+          hasPreviousPage={meta.hasPreviousPage}
+          onPageChange={setPage}
+          onLimitChange={setLimit}
+        />
 
         <WorkspaceLayout
           rail={active ? (
@@ -769,22 +792,6 @@ export function LeadManagementScreen() {
 
               <RailSection title={t('lead.panels.quickActions')}>
                 <div className="grid gap-2">
-                  <AdminButton type="button" className="w-full" onClick={callCustomer} loading={busyAction === `contact-${active.id}`}>
-                    {t('lead.actions.call_customer')}
-                  </AdminButton>
-
-                  <AdminButton type="button" variant="secondary" className="w-full" onClick={sendZalo} loading={busyAction === `zalo-${active.id}`}>
-                    {t('lead.actions.send_zalo')}
-                  </AdminButton>
-
-                  <PermissionButton permission="manage_leads" className="button-secondary w-full" onClick={() => setAssignOpen(true)}>
-                    {t('lead.actions.assign_staff')}
-                  </PermissionButton>
-
-                  <AdminButton type="button" variant="secondary" className="w-full" onClick={() => setEditOpen(true)}>
-                    {t('lead.actions.edit_lead')}
-                  </AdminButton>
-
                   {activeSummary?.href ? (
                     <Link className="button-primary w-full text-center" href={activeSummary.href}>
                       {activeSummary.label}
@@ -800,27 +807,39 @@ export function LeadManagementScreen() {
                       {activeSummary?.label ?? t('lead.actions.request_deposit')}
                     </AdminButton>
                   )}
-
-                  <div className="mt-2 grid grid-cols-2 gap-2">
-                    <AdminButton
-                      type="button"
-                      variant="secondary"
-                      className="w-full text-[rgb(var(--danger))]"
-                      onClick={() => setConfirmAction({ kind: 'cancel', lead: active })}
-                      disabled={active.status === 'cancelled' || hasBooking(active)}
-                    >
-                      {t('lead.actions.cancel_lead')}
-                    </AdminButton>
-
-                    <AdminButton
-                      type="button"
-                      variant="secondary"
-                      className="w-full text-[rgb(var(--danger))]"
-                      onClick={() => setConfirmAction({ kind: 'archive', lead: active })}
-                    >
-                      {t('lead.actions.archive_lead')}
-                    </AdminButton>
-                  </div>
+                  <ActionMenu
+                    className="w-full"
+                    label={t('common.moreActions')}
+                    items={[
+                      {
+                        label: t('lead.actions.call_customer'),
+                        onSelect: () => { void callCustomer(); },
+                      },
+                      {
+                        label: t('lead.actions.send_zalo'),
+                        onSelect: () => { void sendZalo(); },
+                      },
+                      {
+                        label: t('lead.actions.assign_staff'),
+                        onSelect: () => setAssignOpen(true),
+                      },
+                      {
+                        label: t('lead.actions.edit_lead'),
+                        onSelect: () => setEditOpen(true),
+                      },
+                      {
+                        label: t('lead.actions.cancel_lead'),
+                        disabled: active.status === 'cancelled' || hasBooking(active),
+                        tone: 'danger',
+                        onSelect: () => setConfirmAction({ kind: 'cancel', lead: active }),
+                      },
+                      {
+                        label: t('lead.actions.archive_lead'),
+                        tone: 'danger',
+                        onSelect: () => setConfirmAction({ kind: 'archive', lead: active }),
+                      },
+                    ]}
+                  />
                 </div>
               </RailSection>
 
@@ -834,7 +853,7 @@ export function LeadManagementScreen() {
                     {
                       time: formatDateTime(active.createdAt),
                       title: t('leadOps.timeline.created'),
-                      detail: active.source,
+                      detail: translateLeadSource(active.source, t),
                     },
                   ]}
                 />
@@ -867,8 +886,8 @@ export function LeadManagementScreen() {
                   {filteredRows.map((lead) => {
                     const rowAction = buildActionSummary(lead, t);
                     const selected = active?.id === lead.id;
-                    const depositBadge = rowDepositStatus(lead);
-                    const appointmentBadge = rowAppointmentStatus(lead);
+                    const depositBadge = rowDepositStatus(lead, t);
+                    const appointmentBadge = rowAppointmentStatus(lead, t);
 
                     return (
                       <div
@@ -919,41 +938,73 @@ export function LeadManagementScreen() {
                             </p>
                           </div>
 
-                          <div className="flex items-center justify-end gap-2 opacity-100 transition duration-150 lg:opacity-0 lg:group-hover:opacity-100">
-                            <Link href={`/admin/leads/${lead.id}`} title={t('lead.actions.open_detail')}>
-                              <AdminIconButton aria-label={t('lead.actions.open_detail')}>
-                                <EyeIcon />
-                              </AdminIconButton>
-                            </Link>
-                            <AdminIconButton
-                              title={t('lead.actions.call_customer')}
-                              aria-label={t('lead.actions.call_customer')}
-                              onClick={async () => {
-                                const logged = await markContacted(lead);
-                                if (logged) {
-                                  window.location.assign(`tel:${lead.phone}`);
-                                }
-                              }}
-                            >
-                              <PhoneIcon />
-                            </AdminIconButton>
+                          <div className="flex flex-wrap items-center justify-end gap-2 opacity-100 transition duration-150 lg:opacity-0 lg:group-hover:opacity-100">
                             {rowAction.href ? (
-                              <Link href={rowAction.href} title={rowAction.label}>
-                                <AdminIconButton variant="primary" aria-label={rowAction.label}>
-                                  <ArrowIcon />
-                                </AdminIconButton>
+                              <Link className="button-primary min-h-9 px-3 text-sm" href={rowAction.href} title={rowAction.label}>
+                                {rowAction.label}
                               </Link>
                             ) : (
-                              <AdminIconButton
-                                variant="primary"
-                                title={rowAction.label}
-                                aria-label={rowAction.label}
+                              <AdminButton
+                                size="sm"
                                 onClick={() => requestDeposit(lead)}
+                                loading={busyAction === `request-deposit-${lead.id}`}
                                 disabled={!hasRentalRequestContext(lead) || hasRequestedDeposit(lead) || hasBooking(lead)}
                               >
-                                <ArrowIcon />
-                              </AdminIconButton>
+                                {rowAction.label}
+                              </AdminButton>
                             )}
+                            <ActionMenu
+                              label={t('common.moreActions')}
+                              items={[
+                                { label: t('lead.actions.open_detail'), href: `/admin/leads/${lead.id}` },
+                                {
+                                  label: t('lead.actions.call_customer'),
+                                  onSelect: () => {
+                                    void markContacted(lead).then((logged) => {
+                                      if (logged) {
+                                        window.location.assign(`tel:${lead.phone}`);
+                                      }
+                                    });
+                                  },
+                                },
+                                {
+                                  label: t('lead.actions.send_zalo'),
+                                  onSelect: () => {
+                                    setActiveId(lead.id);
+                                    void markContacted(lead, 'leadOps.success.zaloLogged').then((logged) => {
+                                      if (logged) {
+                                        window.open(zaloUrl(lead.phone), '_blank', 'noopener,noreferrer');
+                                      }
+                                    });
+                                  },
+                                },
+                                {
+                                  label: t('lead.actions.assign_staff'),
+                                  onSelect: () => {
+                                    setActiveId(lead.id);
+                                    setAssignOpen(true);
+                                  },
+                                },
+                                {
+                                  label: t('lead.actions.edit_lead'),
+                                  onSelect: () => {
+                                    setActiveId(lead.id);
+                                    setEditOpen(true);
+                                  },
+                                },
+                                {
+                                  label: t('lead.actions.cancel_lead'),
+                                  disabled: lead.status === 'cancelled' || hasBooking(lead),
+                                  tone: 'danger',
+                                  onSelect: () => setConfirmAction({ kind: 'cancel', lead }),
+                                },
+                                {
+                                  label: t('lead.actions.archive_lead'),
+                                  tone: 'danger',
+                                  onSelect: () => setConfirmAction({ kind: 'archive', lead }),
+                                },
+                              ]}
+                            />
                           </div>
                         </div>
                       </div>
@@ -964,7 +1015,7 @@ export function LeadManagementScreen() {
             ) : (
               <EmptyState
                 title={t('leadOps.empty')}
-                description="Clear the filters or create a fresh lead to restart the operating queue."
+                description={t('leadOps.emptyDetail')}
                 action={<PermissionButton permission="manage_leads" onClick={() => setCreateOpen(true)}>{t('leadOps.createLead')}</PermissionButton>}
               />
             )}

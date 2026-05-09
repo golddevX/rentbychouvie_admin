@@ -1,9 +1,50 @@
 import adminApiClient from './api-client';
 
+export type PaginatedQueryParams = {
+  page?: number;
+  limit?: number;
+  sortBy?: string;
+  sortOrder?: 'asc' | 'desc';
+  search?: string;
+  status?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  [key: string]: string | number | boolean | undefined;
+};
+
+export type PaginationMeta = {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+  hasNextPage: boolean;
+  hasPreviousPage: boolean;
+};
+
+export type PaginatedResponse<T> = {
+  data: T[];
+  meta: PaginationMeta;
+};
+
+function listParams(input?: string | PaginatedQueryParams) {
+  if (typeof input === 'string') return { status: input };
+  return input;
+}
+
+function unwrapListResponse<T = any>(response: any): any {
+  return {
+    ...response,
+    data: response.data?.data ?? response.data ?? [] as T[],
+  };
+}
+
 // Auth API
 export const authApi = {
   login: (email: string, password: string) =>
     adminApiClient.post('/auth/login', { email, password }),
+
+  me: () =>
+    adminApiClient.get('/auth/me'),
 
   refresh: (refreshToken: string) =>
     adminApiClient.post('/auth/refresh', { refreshToken }),
@@ -14,8 +55,10 @@ export const authApi = {
 
 // Leads API
 export const leadsApi = {
-  getAll: (status?: string) =>
-    adminApiClient.get('/leads', { params: { status } }),
+  list: (params?: string | PaginatedQueryParams) =>
+    adminApiClient.get('/leads', { params: listParams(params) }),
+  getAll: (params?: string | PaginatedQueryParams) =>
+    adminApiClient.get('/leads', { params: listParams(params) }).then(unwrapListResponse),
 
   getById: (id: string) =>
     adminApiClient.get(`/leads/${id}`),
@@ -38,11 +81,33 @@ export const leadsApi = {
   requestDeposit: (id: string, data?: any) =>
     adminApiClient.post(`/leads/${id}/request-deposit`, data ?? {}),
 
-  receiveDeposit: (id: string, data: { amount: number; paymentMethod?: string; description?: string }) =>
+  receiveDeposit: (
+    id: string,
+    data: {
+      amount: number;
+      paymentMethod?: string;
+      description?: string;
+      depositRate?: number;
+      depositType?: 'percent' | 'custom_amount';
+      customDepositAmount?: number;
+    },
+  ) =>
     adminApiClient.post(`/leads/${id}/receive-deposit`, data),
+
+  expireDeposit: (id: string) =>
+    adminApiClient.post(`/leads/${id}/expire-deposit`),
+
+  refundDeposit: (id: string) =>
+    adminApiClient.post(`/leads/${id}/refund-deposit`),
 
   createAppointment: (id: string) =>
     adminApiClient.post(`/leads/${id}/create-appointment`),
+
+  retryAppointment: (id: string) =>
+    adminApiClient.post(`/leads/${id}/retry-appointment`),
+
+  retryBooking: (id: string) =>
+    adminApiClient.post(`/leads/${id}/retry-booking`),
 
   archive: (id: string) =>
     adminApiClient.patch(`/leads/${id}/archive`),
@@ -56,11 +121,16 @@ export const leadsApi = {
 
 // Bookings API
 export const bookingsApi = {
-  getAll: (status?: string) =>
-    adminApiClient.get('/bookings', { params: { status } }),
+  list: (params?: string | PaginatedQueryParams) =>
+    adminApiClient.get('/bookings', { params: listParams(params) }),
+  getAll: (params?: string | PaginatedQueryParams) =>
+    adminApiClient.get('/bookings', { params: listParams(params) }).then(unwrapListResponse),
 
   getById: (id: string) =>
     adminApiClient.get(`/bookings/${id}`),
+
+  getPaymentSummary: (id: string) =>
+    adminApiClient.get(`/bookings/${id}/payment-summary`),
 
   create: (data: any) =>
     adminApiClient.post('/bookings', data),
@@ -74,6 +144,15 @@ export const bookingsApi = {
   recordBookingDeposit: (id: string, amount: number, paymentMethod = 'CASH') =>
     adminApiClient.post(`/bookings/${id}/deposit`, { amount, paymentMethod }),
 
+  collectRentalPayment: (id: string, data: { amount: number; paymentMethod: string; description?: string }) =>
+    adminApiClient.post(`/bookings/${id}/collect-rental-payment`, data),
+
+  collectSecurityDeposit: (id: string, data: { amount: number; paymentMethod: string; description?: string }) =>
+    adminApiClient.post(`/bookings/${id}/collect-security-deposit`, data),
+
+  finalizeReturnSettlement: (id: string, data: { paymentMethod: string; description?: string; applyRentalToDeposit?: boolean }) =>
+    adminApiClient.post(`/bookings/${id}/finalize-return-settlement`, data),
+
   archive: (id: string) =>
     adminApiClient.patch(`/bookings/${id}/archive`),
 
@@ -85,8 +164,10 @@ export const bookingsApi = {
 
 // Inventory API
 export const inventoryApi = {
-  getItems: (status?: string) =>
-    adminApiClient.get('/inventory/items', { params: { status } }),
+  listItems: (params?: string | PaginatedQueryParams) =>
+    adminApiClient.get('/inventory/items', { params: listParams(params) }),
+  getItems: (params?: string | PaginatedQueryParams) =>
+    adminApiClient.get('/inventory/items', { params: listParams(params) }).then(unwrapListResponse),
 
   getItemById: (id: string) =>
     adminApiClient.get(`/inventory/items/${id}`),
@@ -124,8 +205,8 @@ export const scanApi = {
 export const pickupApi = {
   scan: (bookingId: string, qrCode: string) =>
     adminApiClient.post(`/pickup/${bookingId}/scan`, { qrCode }),
-  confirm: (bookingId: string, qrCodes: string[], conditionNotes?: string) =>
-    adminApiClient.post(`/pickup/${bookingId}/confirm`, { qrCodes, conditionNotes }),
+  confirm: (bookingId: string, images: string[], conditionNotes?: string) =>
+    adminApiClient.post(`/pickup/${bookingId}/confirm`, { images, conditionNotes }),
 };
 
 export const returnsApi = {
@@ -134,24 +215,64 @@ export const returnsApi = {
     images: string[];
     notes?: string;
     declaredDamageFee?: number;
+    items?: Array<{
+      inventoryItemId: string;
+      condition: 'good' | 'dirty' | 'damaged' | 'missing_accessory' | 'missing_item';
+      images?: string[];
+      damageFee?: number;
+      accessoryFee?: number;
+    }>;
   }) => adminApiClient.post(`/return/${bookingId}/inspect`, data),
   settle: (bookingId: string, data: {
-    qrCodes: string[];
     condition: 'clean' | 'dirty' | 'damaged' | 'incomplete';
     actualReturnDate?: string;
-    damageFee?: number;
-    accessoryLostValues?: number[];
-    affectsNextBooking?: boolean;
+    lateFee?: number;
+    dirtyFee?: number;
+    otherFee?: number;
     notes?: string;
+    applyRentalToDeposit?: boolean;
+    items: Array<{
+      inventoryItemId: string;
+      condition: 'good' | 'dirty' | 'damaged' | 'missing_accessory' | 'missing_item';
+      images?: string[];
+      damageFee?: number;
+      accessoryFee?: number;
+    }>;
   }) => adminApiClient.post(`/return/${bookingId}/settle`, data),
 };
 
 export const productsApi = {
-  getAll: (params?: { category?: string; search?: string }) =>
+  list: (params?: PaginatedQueryParams & { category?: string }) =>
     adminApiClient.get('/products', { params }),
+  getAll: (params?: PaginatedQueryParams & { category?: string }) =>
+    adminApiClient.get('/products', { params }).then(unwrapListResponse),
 
   getById: (id: string) =>
     adminApiClient.get(`/products/${id}`),
+
+  getAvailability: (id: string, params?: { pickupDate?: string; returnDate?: string }) =>
+    adminApiClient.get(`/products/${id}/availability`, { params }),
+
+  getSchedule: (id: string) =>
+    adminApiClient.get(`/products/${id}/schedule`),
+
+  getQRImage: (id: string) =>
+    adminApiClient.get(`/products/${id}/qr-image`),
+
+  create: (data: any) =>
+    adminApiClient.post('/products', data),
+
+  update: (id: string, data: any) =>
+    adminApiClient.patch(`/products/${id}`, data),
+
+  updateStatus: (id: string, status: string, note?: string) =>
+    adminApiClient.patch(`/products/${id}/status`, { status, note }),
+
+  regenerateQR: (id: string) =>
+    adminApiClient.patch(`/products/${id}/regenerate-qr`),
+
+  archive: (id: string) =>
+    adminApiClient.patch(`/products/${id}/archive`),
 
   createVariant: (productId: string, data: any) =>
     adminApiClient.post(`/products/${productId}/variants`, data),
@@ -197,11 +318,19 @@ export const rentalsApi = {
 
 // Payments API
 export const paymentsApi = {
-  getAll: (status?: string) =>
-    adminApiClient.get('/payments', { params: { status } }),
+  list: (params?: string | PaginatedQueryParams) =>
+    adminApiClient.get('/payments', { params: listParams(params) }),
+  getAll: (params?: string | PaginatedQueryParams) =>
+    adminApiClient.get('/payments', { params: listParams(params) }).then(unwrapListResponse),
 
   getById: (id: string) =>
     adminApiClient.get(`/payments/${id}`),
+
+  getByLead: (leadId: string) =>
+    adminApiClient.get(`/payments/by-lead/${leadId}`),
+
+  getByBooking: (bookingId: string) =>
+    adminApiClient.get(`/payments/by-booking/${bookingId}`),
 
   create: (data: any) =>
     adminApiClient.post('/payments', data),
@@ -259,7 +388,8 @@ export const paymentsApi = {
 };
 
 export const receiptsApi = {
-  getAll: () => adminApiClient.get('/receipts'),
+  list: (params?: PaginatedQueryParams & { includeArchived?: boolean }) => adminApiClient.get('/receipts', { params }),
+  getAll: (params?: PaginatedQueryParams & { includeArchived?: boolean }) => adminApiClient.get('/receipts', { params }).then(unwrapListResponse),
   getById: (id: string) => adminApiClient.get(`/receipts/${id}`),
   update: (id: string, data: any) => adminApiClient.patch(`/receipts/${id}`, data),
   print: (id: string) => adminApiClient.post(`/receipts/${id}/print`),
@@ -268,7 +398,18 @@ export const receiptsApi = {
 };
 
 export const appointmentsApi = {
-  getAll: (params?: any) => adminApiClient.get('/appointments', { params }),
+  list: (params?: PaginatedQueryParams & {
+    type?: string;
+    staffId?: string;
+    lifecycleStatus?: string;
+    includeArchived?: boolean;
+  }) => adminApiClient.get('/appointments', { params }),
+  getAll: (params?: PaginatedQueryParams & {
+    type?: string;
+    staffId?: string;
+    lifecycleStatus?: string;
+    includeArchived?: boolean;
+  }) => adminApiClient.get('/appointments', { params }).then(unwrapListResponse),
   getById: (id: string) => adminApiClient.get(`/appointments/${id}`),
   create: (data: any) => adminApiClient.post('/appointments', data),
   update: (id: string, data: any) => adminApiClient.patch(`/appointments/${id}`, data),
@@ -280,6 +421,8 @@ export const appointmentsApi = {
     resourceItemId?: string;
   }) => adminApiClient.get('/appointments/availability/query', { params }),
   complete: (id: string) => adminApiClient.post(`/appointments/${id}/complete`),
+  cancel: (id: string) => adminApiClient.post(`/appointments/${id}/cancel`),
+  noShow: (id: string) => adminApiClient.post(`/appointments/${id}/no-show`),
   updateStatus: (id: string, status: string) =>
     adminApiClient.patch(`/appointments/${id}/status`, { status }),
   archive: (id: string) => adminApiClient.patch(`/appointments/${id}/archive`),
@@ -299,7 +442,8 @@ export const rentalOrdersApi = {
 };
 
 export const previewRequestsApi = {
-  getAll: (params?: any) => adminApiClient.get('/preview-requests', { params }),
+  list: (params?: PaginatedQueryParams & { assignedToId?: string; includeArchived?: boolean }) => adminApiClient.get('/preview-requests', { params }),
+  getAll: (params?: PaginatedQueryParams & { assignedToId?: string; includeArchived?: boolean }) => adminApiClient.get('/preview-requests', { params }).then(unwrapListResponse),
   getById: (id: string) => adminApiClient.get(`/preview-requests/${id}`),
   create: (data: any) => adminApiClient.post('/preview-requests', data),
   update: (id: string, data: any) => adminApiClient.patch(`/preview-requests/${id}`, data),
@@ -309,18 +453,27 @@ export const previewRequestsApi = {
 };
 
 export const auditLogsApi = {
-  getAll: (params?: {
+  list: (params?: PaginatedQueryParams & {
     entity?: string;
     entityId?: string;
     bookingId?: string;
     paymentId?: string;
     inventoryItemId?: string;
   }) => adminApiClient.get('/audit-logs', { params }),
+  getAll: (params?: PaginatedQueryParams & {
+    entity?: string;
+    entityId?: string;
+    bookingId?: string;
+    paymentId?: string;
+    inventoryItemId?: string;
+  }) => adminApiClient.get('/audit-logs', { params }).then(unwrapListResponse),
 };
 
 export const disputesApi = {
-  getAll: (params?: { status?: string; priority?: string; bookingId?: string }) =>
+  list: (params?: PaginatedQueryParams & { status?: string; priority?: string; bookingId?: string }) =>
     adminApiClient.get('/disputes', { params }),
+  getAll: (params?: PaginatedQueryParams & { status?: string; priority?: string; bookingId?: string }) =>
+    adminApiClient.get('/disputes', { params }).then(unwrapListResponse),
   getById: (id: string) => adminApiClient.get(`/disputes/${id}`),
   create: (data: any) => adminApiClient.post('/disputes', data),
   update: (id: string, data: any) => adminApiClient.patch(`/disputes/${id}`, data),
@@ -352,8 +505,10 @@ export const reportsApi = {
 
 // Users API
 export const usersApi = {
-  getAll: () =>
-    adminApiClient.get('/users'),
+  list: (params?: PaginatedQueryParams & { role?: string }) =>
+    adminApiClient.get('/users', { params }),
+  getAll: (params?: PaginatedQueryParams & { role?: string }) =>
+    adminApiClient.get('/users', { params }).then(unwrapListResponse),
 
   getById: (id: string) =>
     adminApiClient.get(`/users/${id}`),
@@ -390,4 +545,6 @@ export const permissionsApi = {
 export const siteSettingsApi = {
   getHomepage: () => adminApiClient.get('/site-settings/homepage'),
   updateHomepage: (data: any) => adminApiClient.patch('/site-settings/homepage', data),
+  getClient: () => adminApiClient.get('/site-settings/client'),
+  updateClient: (data: any) => adminApiClient.patch('/site-settings/client', data),
 };

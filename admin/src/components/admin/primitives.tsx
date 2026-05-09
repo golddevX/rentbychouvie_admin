@@ -2,6 +2,7 @@
 
 import {
   Children,
+  forwardRef,
   isValidElement,
   type ButtonHTMLAttributes,
   type ChangeEvent,
@@ -56,47 +57,58 @@ type AdminButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   rightIcon?: ReactNode;
 };
 
-export function AdminButton({
-  className,
-  variant = 'primary',
-  size = 'md',
-  loading = false,
-  leftIcon,
-  rightIcon,
-  children,
-  disabled,
-  ...props
-}: AdminButtonProps) {
+export const AdminButton = forwardRef<HTMLButtonElement, AdminButtonProps>(function AdminButton(
+  {
+    className,
+    variant = 'primary',
+    size = 'md',
+    loading = false,
+    leftIcon,
+    rightIcon,
+    children,
+    disabled,
+    ...props
+  },
+  ref,
+) {
   const isDisabled = disabled || loading;
+
   const variants = {
     primary: 'button-primary',
     secondary: 'button-secondary',
     ghost: 'button-ghost',
     danger: 'button-danger',
   };
+
   const sizes = {
     sm: 'min-h-9 px-3 text-sm',
     md: 'min-h-11 px-4 text-sm',
     lg: 'min-h-12 px-5 text-base',
   };
+
   return (
     <button
+      ref={ref}
+      type={props.type ?? 'button'}
       className={cn(
-        'inline-flex items-center justify-center gap-2 whitespace-nowrap font-semibold transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--input-focus-ring))/18]',
+        'inline-flex min-w-0 max-w-full items-center justify-center gap-2 whitespace-nowrap font-semibold transition-all duration-200',
+        'focus:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--input-focus-ring))/18]',
+        'disabled:pointer-events-none disabled:opacity-60',
         variants[variant],
         sizes[size],
-        'disabled:pointer-events-none',
         className,
       )}
       disabled={isDisabled}
       {...props}
     >
       {loading ? <AdminSpinner className="h-3.5 w-3.5" /> : leftIcon}
-      <span className="truncate">{children}</span>
-      {!loading && rightIcon}
+
+      {children ? <span className="truncate">{children}</span> : null}
+
+      {!loading && rightIcon ? rightIcon : null}
     </button>
   );
-}
+});
 
 type AdminInputProps = InputHTMLAttributes<HTMLInputElement> & {
   error?: boolean;
@@ -105,18 +117,18 @@ type AdminInputProps = InputHTMLAttributes<HTMLInputElement> & {
   inputClassName?: string;
 };
 
-export function AdminInput({
+export const AdminInput = forwardRef<HTMLInputElement, AdminInputProps>(function AdminInput({
   className,
   inputClassName,
   error = false,
   leftIcon,
   rightIcon,
   ...props
-}: AdminInputProps) {
+}, ref) {
   return (
     <div
       className={cn(
-        'group relative flex min-h-11 w-full items-center border bg-[rgb(var(--input-bg))]/95 px-3.5 text-[rgb(var(--input-text))] transition-all duration-200',
+        'group relative flex min-h-11 w-full min-w-0 items-center border bg-[rgb(var(--input-bg))]/95 px-3.5 text-[rgb(var(--input-text))] transition-all duration-200',
         'rounded-[var(--radius-sm)] shadow-[var(--shadow-soft)]',
         error ? 'border-[rgb(var(--danger))/40] ring-2 ring-[rgb(var(--danger))/12]' : 'border-[rgb(var(--input-border))]/90 focus-within:border-[rgb(var(--input-focus-ring))] focus-within:ring-2 focus-within:ring-[rgb(var(--input-focus-ring))/14]',
         className,
@@ -124,8 +136,9 @@ export function AdminInput({
     >
       {leftIcon ? <span className="mr-2 inline-flex shrink-0 text-[rgb(var(--text-muted))]">{leftIcon}</span> : null}
       <input
+        ref={ref}
         className={cn(
-          'h-10 w-full bg-transparent text-sm outline-none placeholder:text-[rgb(var(--input-placeholder))]',
+          'h-10 w-full min-w-0 bg-transparent text-sm outline-none placeholder:text-[rgb(var(--input-placeholder))]',
           inputClassName,
         )}
         {...props}
@@ -133,7 +146,7 @@ export function AdminInput({
       {rightIcon ? <span className="ml-2 inline-flex shrink-0 text-[rgb(var(--text-muted))]">{rightIcon}</span> : null}
     </div>
   );
-}
+});
 
 type AdminSelectProps = SelectHTMLAttributes<HTMLSelectElement> & {
   error?: boolean;
@@ -278,7 +291,7 @@ export function AdminBadge({
   tone?: 'neutral' | 'info' | 'success' | 'warning' | 'danger' | 'accent';
   children: ReactNode;
 }) {
-  return <span className={cn('status-badge-base', `status-badge-${tone}`, className)}>{children}</span>;
+  return <span className={cn('status-badge-base max-w-full whitespace-nowrap', `status-badge-${tone}`, className)}>{children}</span>;
 }
 
 export function AdminIconButton({
@@ -299,7 +312,7 @@ export function AdminIconButton({
       {...props}
       variant={variant}
       size={size}
-      className={cn('shrink-0', sizes[size], className)}
+      className={cn('shrink-0 overflow-hidden', sizes[size], className)}
     >
       {children}
     </AdminButton>
@@ -353,22 +366,38 @@ export function AdminModal({
   };
 
   return ReactDOM.createPortal(
-    <div className="fixed inset-0 z-50 p-4">
-      <button type="button" aria-label="Close overlay" className="absolute inset-0 bg-[rgb(var(--overlay))] backdrop-blur-sm" onClick={onClose} />
-      <div className="relative grid h-full place-items-center">
-        <div className={cn('surface-card relative flex w-full flex-col overflow-hidden', sizeClass[size])}>
-          <div className="border-b border-[rgb(var(--surface-border))] px-5 py-4">
+    <div className="fixed inset-0 z-[160] p-3 sm:p-4">
+      <button
+        type="button"
+        aria-label="Close overlay"
+        className="absolute inset-0 backdrop-blur-md"
+        style={{ backgroundColor: 'rgb(var(--overlay) / 0.52)' }}
+        onClick={onClose}
+      />
+      <div className="relative flex h-full items-center justify-center overflow-y-auto">
+        <div
+          role="dialog"
+          aria-modal="true"
+          className={cn(
+            'surface-card relative flex w-full max-h-[calc(100vh-1.5rem)] flex-col overflow-hidden rounded-[30px] border-[rgb(var(--surface-border))]/80 bg-[rgb(var(--surface-2))]/96 shadow-[0_30px_90px_rgba(15,23,42,0.24)] backdrop-blur-2xl sm:max-h-[calc(100vh-2rem)]',
+            sizeClass[size],
+          )}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="shrink-0 border-b border-[rgb(var(--surface-border))]/75 px-5 py-4 sm:px-6">
             <div className="flex items-center justify-between gap-3">
-              <h2 className="text-lg font-semibold text-[rgb(var(--text-primary))]">{title}</h2>
-              <AdminButton variant="ghost" className="h-9 w-9 p-0" onClick={onClose}>
+              <h2 className="min-w-0 text-lg font-semibold text-[rgb(var(--text-primary))]">{title}</h2>
+              <AdminButton variant="ghost" className="h-9 w-9 shrink-0 p-0" onClick={onClose}>
                 x
               </AdminButton>
             </div>
           </div>
-          <div className="max-h-[70vh] overflow-y-auto px-5 py-5">{children}</div>
-          <div className="border-t border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-3))]/70 px-5 py-4">
-            <div className="flex justify-end gap-2">{footer}</div>
-          </div>
+          <div className="min-h-0 overflow-y-auto px-5 py-5 sm:px-6">{children}</div>
+          {footer ? (
+            <div className="shrink-0 border-t border-[rgb(var(--surface-border))]/75 bg-[rgb(var(--surface-3))]/72 px-5 py-4 sm:px-6">
+              <div className="flex flex-wrap justify-end gap-2">{footer}</div>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>,

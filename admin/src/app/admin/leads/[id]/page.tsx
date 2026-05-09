@@ -1,9 +1,9 @@
-'use client';
+﻿'use client';
 
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { appointmentsApi, auditLogsApi, inventoryApi, leadsApi, productsApi, usersApi } from '@/lib/api';
+import { appointmentsApi, auditLogsApi, leadsApi, paymentsApi, productsApi, usersApi } from '@/lib/api';
 import { can } from '@/lib/admin/permissions';
 import { useI18n } from '@/hooks/useI18n';
 import { useAuthStore } from '@/store/auth.store';
@@ -11,13 +11,11 @@ import {
   FeedbackPopup,
   InlineAlert,
   PageHeader,
-  RailSection,
   SectionCard,
   StatusBadge,
   TimelineList,
-  WorkspaceLayout,
 } from '@/components/admin/ui';
-import { ColorPicker, MoneyInput, ProductCardSelect, SizeSelector, parseImageList, type LeadProductOption } from '@/components/admin/lead-ui';
+import { MoneyInput, ProductCardSelect, parseImageList, type LeadProductOption } from '@/components/admin/lead-ui';
 import { AdminBadge, AdminButton, AdminInput, AdminModal, AdminSelect, AdminSpinner, cn } from '@/components/admin/primitives';
 import type { Tone } from '@/lib/admin/demo-data';
 
@@ -57,9 +55,6 @@ type LeadDetail = {
   variantName?: string;
   requestedSize?: string;
   requestedColor?: string;
-  inventoryItemId?: string;
-  inventoryItemLabel?: string;
-  inventoryStatus?: string;
   pickupDate?: string;
   returnDate?: string;
   appointmentIntent: AppointmentIntent;
@@ -77,26 +72,63 @@ type LeadDetail = {
   appointmentTime?: string;
   bookingId?: string;
   bookingStatus?: string;
+  workflowBlockCode?: string;
+  workflowBlockMessage?: string;
+  items: Array<{
+    id: string;
+    productId: string;
+    productName: string;
+    productValue: number;
+    rentalPrice: number;
+    imageUrl?: string;
+    qrCode?: string;
+    status: string;
+  }>;
   createdAt?: string;
   updatedAt?: string;
 };
 
-type ProductOption = LeadProductOption;
-
-type InventoryOption = {
-  id: string;
-  productId: string;
-  variantId?: string;
-  serialNumber: string;
-  status?: string;
-  productName?: string;
-  variantName?: string;
+type LeadPaymentSummary = {
+  productValue: number;
+  rentalTotal?: number;
+  selectedDepositType?: string;
+  selectedDepositRate: number;
+  customDepositAmount?: number | null;
+  securityDepositRequiredByRate: number;
+  securityDepositFullAmount: number;
+  securityDepositPaid: number;
+  securityDepositRemainingForSelectedRate: number;
+  securityDepositRemainingForFull: number;
+  refundedAmount: number;
+  depositStatus: string;
+  depositDeadline?: string | null;
+  canReserve: boolean;
+  canReceiveDeposit: boolean;
+  canRefundDeposit: boolean;
+  products?: Array<{
+    id: string;
+    name: string;
+    image?: string | null;
+    productValue: number;
+    rentalPrice: number;
+    status?: string;
+    qrCode?: string;
+  }>;
 };
+
+type ProductOption = LeadProductOption;
 
 type StaffOption = {
   id: string;
   fullName: string;
   role?: string;
+};
+
+type LeadDepositChoice = {
+  key: string;
+  labelKey: string;
+  helperKey: string;
+  amount: number;
 };
 
 type AuditRow = {
@@ -116,6 +148,22 @@ const PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'CARD', 'BANK_TRANSFER', 'MOMO
 
 function lower(value?: string | null) {
   return String(value ?? '').toLowerCase();
+}
+
+function formatPolicyMoney(value: number) {
+  return new Intl.NumberFormat('vi-VN', {
+    style: 'currency',
+    currency: 'VND',
+    maximumFractionDigits: 0,
+  }).format(Math.max(Number(value || 0), 0));
+}
+
+function normalizeEntityId(value: unknown) {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 120) return undefined;
+  if (normalized.startsWith('data:') || normalized.startsWith('[') || normalized.includes('base64,')) return undefined;
+  return normalized;
 }
 
 function normalizeStatus(value?: string): LeadStatus {
@@ -201,8 +249,85 @@ function minutesUntil(value?: string) {
   return Math.ceil((new Date(value).getTime() - Date.now()) / 60000);
 }
 
+function leadDepositChoices(productValue: number): {
+  defaultAmount: number;
+  policyLabelKey: string;
+  policyHelperKey: string;
+  options: LeadDepositChoice[];
+} {
+  const normalizedValue = Math.max(Number(productValue || 0), 0);
+  if (normalizedValue <= 300000) {
+    return {
+      defaultAmount: 0,
+      policyLabelKey: 'leadOps.deposit.policyLabel.none',
+      policyHelperKey: 'leadOps.deposit.policyHelper.none',
+      options: [
+        {
+          key: 'no_deposit',
+          labelKey: 'leadOps.deposit.option.no_deposit',
+          helperKey: 'leadOps.deposit.optionHelper.no_deposit',
+          amount: 0,
+        },
+      ],
+    };
+  }
+  if (normalizedValue < 1000000) {
+    return {
+      defaultAmount: 500000,
+      policyLabelKey: 'leadOps.deposit.policyLabel.mid',
+      policyHelperKey: 'leadOps.deposit.policyHelper.mid',
+      options: [
+        {
+          key: 'cash_500k',
+          labelKey: 'leadOps.deposit.option.cash_500k',
+          helperKey: 'leadOps.deposit.optionHelper.cash_500k',
+          amount: 500000,
+        },
+        {
+          key: 'document_only',
+          labelKey: 'leadOps.deposit.option.document_only',
+          helperKey: 'leadOps.deposit.optionHelper.document_only',
+          amount: 0,
+        },
+      ],
+    };
+  }
+  return {
+    defaultAmount: 1000000,
+    policyLabelKey: 'leadOps.deposit.policyLabel.high',
+    policyHelperKey: 'leadOps.deposit.policyHelper.high',
+    options: [
+      {
+        key: 'cash_1m',
+        labelKey: 'leadOps.deposit.option.cash_1m',
+        helperKey: 'leadOps.deposit.optionHelper.cash_1m',
+        amount: 1000000,
+      },
+      {
+        key: 'cash_500k_with_document',
+        labelKey: 'leadOps.deposit.option.cash_500k_with_document',
+        helperKey: 'leadOps.deposit.optionHelper.cash_500k_with_document',
+        amount: 500000,
+      },
+    ],
+  };
+}
+
+function resolveLeadDepositSelection(productValue: number, _depositRate: number, amount?: number | null) {
+  const policy = leadDepositChoices(productValue);
+  const normalizedAmount = amount == null ? policy.defaultAmount : Math.max(Number(amount || 0), 0);
+  return {
+    depositType: 'custom_amount' as const,
+    customDepositAmount: normalizedAmount,
+  };
+}
+
+function sumLeadProductValue(items: LeadDetail['items']) {
+  return items.reduce((sum, item) => sum + Math.max(Number(item.productValue || 0), 0), 0);
+}
+
 function hasProductSelection(lead: LeadDetail) {
-  return Boolean(lead.productId);
+  return Boolean(lead.items.length || lead.productId);
 }
 
 function hasRentalRequestContext(lead: LeadDetail) {
@@ -225,6 +350,11 @@ function hasBooking(lead: LeadDetail) {
   return Boolean(lead.bookingId || lead.status === 'booking_created');
 }
 
+function hasReservedProducts(lead: LeadDetail) {
+  return ['reserved', 'converted_to_booking'].includes(lead.productHoldStatus)
+    || lead.items.some((item) => ['reserved', 'converted_to_booking'].includes(lower(item.status)));
+}
+
 function appointmentIsRecoverable(lead: LeadDetail) {
   return hasReceivedDeposit(lead) && !lead.appointmentId;
 }
@@ -234,7 +364,7 @@ function isManualLead(lead: LeadDetail) {
 }
 
 function canEditProduct(lead: LeadDetail) {
-  return !hasRequestedDeposit(lead) && !hasReceivedDeposit(lead) && !hasBooking(lead) && (isManualLead(lead) || !hasRentalRequestContext(lead));
+  return !hasRequestedDeposit(lead) && !hasReceivedDeposit(lead) && !hasBooking(lead);
 }
 
 function canReceiveDepositByRole(role?: string | null) {
@@ -261,7 +391,7 @@ function canCompleteAppointment(lead: LeadDetail) {
 }
 
 function canCreateBookingOverride(lead: LeadDetail) {
-  return lead.status === 'appointment_completed' && !hasBooking(lead);
+  return lead.status === 'appointment_completed' && !hasBooking(lead) && lead.workflowBlockCode === 'booking_failed';
 }
 
 function nextStepKey(lead: LeadDetail) {
@@ -273,6 +403,15 @@ function nextStepKey(lead: LeadDetail) {
   if (lead.status === 'deposit_received' || lead.status === 'appointment_created') return 'lead.next_step.waiting_appointment_completed';
   if (lead.status === 'appointment_completed') return 'lead.next_step.open_booking';
   return 'lead.next_step.call_customer';
+}
+
+function translateLeadSource(
+  source: string,
+  t: (key: string, params?: Record<string, string | number>) => string,
+) {
+  const key = `leadOps.source.${source}`;
+  const translated = t(key);
+  return translated === key ? source : translated;
 }
 
 function statusTone(lead: LeadDetail): Tone {
@@ -302,9 +441,6 @@ function leadFromApi(row: any, labels: { unknownCustomer: string; unassigned: st
     variantName: row.variant?.name ?? row.variantName ?? undefined,
     requestedSize: row.requestedSize ?? row.variant?.size ?? undefined,
     requestedColor: row.requestedColor ?? row.variant?.color ?? undefined,
-    inventoryItemId: row.inventoryItem?.id ?? row.inventoryItemId ?? undefined,
-    inventoryItemLabel: row.inventoryItem?.serialNumber ?? undefined,
-    inventoryStatus: row.inventoryItem?.status ?? undefined,
     pickupDate: row.pickupDate ?? undefined,
     returnDate: row.returnDate ?? undefined,
     appointmentIntent: normalizeAppointmentIntent(row.appointmentIntent),
@@ -316,12 +452,24 @@ function leadFromApi(row: any, labels: { unknownCustomer: string; unassigned: st
     depositDeadlineAt: row.depositDeadlineAt ?? undefined,
     depositReceivedAt: row.depositReceivedAt ?? undefined,
     contactedAt: row.contactedAt ?? undefined,
-    appointmentId: row.appointment?.id ?? row.appointmentId ?? undefined,
+    appointmentId: normalizeEntityId(row.appointment?.id ?? row.appointmentId),
     appointmentStatus: lower(row.appointment?.status ?? row.appointmentStatus) || undefined,
     appointmentType: lower(row.appointment?.type) || undefined,
     appointmentTime: row.appointment?.scheduledAt ?? row.appointment?.startTime ?? undefined,
-    bookingId: row.booking?.id ?? row.bookingId ?? row.convertedToBookingId ?? undefined,
+    bookingId: normalizeEntityId(row.booking?.id ?? row.bookingId ?? row.convertedToBookingId),
     bookingStatus: lower(row.booking?.status ?? row.bookingStatus) || undefined,
+    workflowBlockCode: row.workflowBlockCode ?? undefined,
+    workflowBlockMessage: row.workflowBlockMessage ?? undefined,
+    items: (row.items ?? []).map((item: any) => ({
+      id: item.productId ?? item.id,
+      productId: item.productId,
+      productName: item.product?.name ?? '-',
+      productValue: Number(item.productValueAtTime ?? item.product?.productValue ?? item.product?.price ?? 0),
+      rentalPrice: Number(item.rentalPriceAtTime ?? item.product?.rentalPrice ?? item.product?.price ?? 0),
+      imageUrl: item.product?.image ?? undefined,
+      qrCode: item.product?.qrCode ?? item.productId,
+      status: lower(item.status) || 'requested',
+    })),
     createdAt: row.createdAt ?? undefined,
     updatedAt: row.updatedAt ?? undefined,
   };
@@ -390,10 +538,20 @@ function DetailField({
   helper?: string;
 }) {
   return (
-    <div className="rounded-[22px] border border-[rgb(var(--surface-border))]/75 bg-[rgb(var(--surface-3))]/66 px-4 py-3.5">
-      <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">{label}</p>
-      <div className="mt-2 text-sm font-semibold text-[rgb(var(--text-primary))]">{value}</div>
-      {helper ? <p className="mt-1.5 text-xs leading-5 text-[rgb(var(--text-secondary))]">{helper}</p> : null}
+    <div className="group rounded-[20px] border border-[rgb(var(--surface-border))]/65 bg-[rgb(var(--surface-3))]/45 px-4 py-3.5 transition hover:border-[rgb(var(--accent-solid))]/25 hover:bg-[rgb(var(--surface-2))]/80">
+      <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-[rgb(var(--text-muted))]">
+        {label}
+      </p>
+
+      <div className="mt-1.5 min-w-0 truncate text-sm font-semibold text-[rgb(var(--text-primary))]">
+        {value}
+      </div>
+
+      {helper ? (
+        <p className="mt-1.5 line-clamp-2 text-xs leading-5 text-[rgb(var(--text-secondary))]">
+          {helper}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -402,18 +560,404 @@ function FormBlock({
   title,
   description,
   children,
+  rightSlot,
 }: {
   title: string;
   description: string;
   children: ReactNode;
+  rightSlot?: ReactNode;
 }) {
   return (
-    <div className="rounded-[24px] border border-[rgb(var(--surface-border))]/80 bg-[rgb(var(--surface-2))]/88 p-5 shadow-[0_14px_34px_rgba(15,23,42,0.05)]">
-      <div className="mb-4">
-        <p className="text-base font-semibold tracking-[-0.02em] text-[rgb(var(--text-primary))]">{title}</p>
-        <p className="mt-1 text-sm leading-6 text-[rgb(var(--text-secondary))]">{description}</p>
+    <section className="rounded-[28px] border border-[rgb(var(--surface-border))]/70 bg-[rgb(var(--surface-2))]/82 p-5 shadow-[0_18px_44px_rgba(15,23,42,0.045)] md:p-6">
+      <div className="mb-5 flex flex-col gap-3 border-b border-[rgb(var(--surface-border))]/55 pb-4 md:flex-row md:items-start md:justify-between">
+        <div className="min-w-0">
+          <h3 className="text-base font-semibold tracking-[-0.025em] text-[rgb(var(--text-primary))]">
+            {title}
+          </h3>
+          <p className="mt-1 max-w-2xl text-sm leading-6 text-[rgb(var(--text-secondary))]">
+            {description}
+          </p>
+        </div>
+
+        {rightSlot ? <div className="shrink-0">{rightSlot}</div> : null}
       </div>
-      <div className="grid gap-4">{children}</div>
+
+      <div className="grid gap-5">{children}</div>
+    </section>
+  );
+}
+
+function MetricTile({
+  label,
+  value,
+  helper,
+  tone = 'neutral',
+}: {
+  label: string;
+  value: ReactNode;
+  helper?: string;
+  tone?: Tone;
+}) {
+  const toneClass: Record<Tone, string> = {
+    neutral: 'bg-[rgb(var(--surface-3))]/55 border-[rgb(var(--surface-border))]/65',
+    info: 'bg-[rgb(var(--info))/7] border-[rgb(var(--info))/18]',
+    success: 'bg-[rgb(var(--success))/8] border-[rgb(var(--success))/18]',
+    warning: 'bg-[rgb(var(--warning))/8] border-[rgb(var(--warning))/22]',
+    danger: 'bg-[rgb(var(--danger))/8] border-[rgb(var(--danger))/22]',
+    accent: 'bg-[rgb(var(--accent-solid))/8] border-[rgb(var(--accent-solid))/18]',
+  };
+
+  return (
+    <div className={cn('rounded-[22px] border px-4 py-3.5', toneClass[tone])}>
+      <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-[rgb(var(--text-muted))]">
+        {label}
+      </p>
+      <div className="mt-1.5 truncate text-lg font-semibold tracking-[-0.03em] text-[rgb(var(--text-primary))]">
+        {value}
+      </div>
+      {helper ? (
+        <p className="mt-1 text-xs leading-5 text-[rgb(var(--text-secondary))]">
+          {helper}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function OverviewStageCard({
+  icon,
+  title,
+  value,
+  detail,
+  tone,
+  statusLabel,
+}: {
+  icon: ReactNode;
+  title: string;
+  value: string;
+  detail: string;
+  tone: Tone;
+  statusLabel: string;
+}) {
+  const toneClass: Record<Tone, string> = {
+    neutral: 'border-[rgb(var(--surface-border))]/65 bg-[rgb(var(--surface-3))]/45',
+    info: 'border-[rgb(var(--info))/18] bg-[rgb(var(--info))/7]',
+    success: 'border-[rgb(var(--success))/18] bg-[rgb(var(--success))/8]',
+    warning: 'border-[rgb(var(--warning))/22] bg-[rgb(var(--warning))/8]',
+    danger: 'border-[rgb(var(--danger))/22] bg-[rgb(var(--danger))/8]',
+    accent: 'border-[rgb(var(--accent-solid))/18] bg-[rgb(var(--accent-solid))/8]',
+  };
+
+  return (
+    <div className={cn('rounded-[24px] border p-4 transition', toneClass[tone])}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-[16px] border border-[rgb(var(--surface-border))]/60 bg-[rgb(var(--surface-2))]/78 text-[rgb(var(--text-primary))]">
+            {icon}
+          </div>
+          <div className="min-w-0">
+            <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-[rgb(var(--text-muted))]">
+              {title}
+            </p>
+            <p className="mt-1 truncate text-sm font-semibold text-[rgb(var(--text-primary))]">
+              {value}
+            </p>
+          </div>
+        </div>
+
+        <AdminBadge tone={tone}>{statusLabel}</AdminBadge>
+      </div>
+
+      <p className="mt-3 line-clamp-2 text-xs leading-5 text-[rgb(var(--text-secondary))]">
+        {detail}
+      </p>
+    </div>
+  );
+}
+
+function LeadHeroCard({
+  lead,
+  currency,
+  nextStep,
+  productDetail,
+  productStepDetail,
+  productValue,
+  rentalValue,
+  depositRequestedAmount,
+  depositPaidAmount,
+  depositRemainingAmount,
+  depositDeadlineState,
+  requestDepositHelper,
+  bookingStepTitle,
+  bookingStepDetail,
+  reserveFailed,
+  appointmentFailed,
+  bookingFailed,
+  bookingReservationBlocked,
+}: {
+  lead: LeadDetail;
+  currency: Intl.NumberFormat;
+  nextStep: string;
+  productDetail: string;
+  productStepDetail: string;
+  productValue: number;
+  rentalValue: number;
+  depositRequestedAmount: number;
+  depositPaidAmount: number;
+  depositRemainingAmount: number;
+  depositDeadlineState: string;
+  requestDepositHelper: string;
+  bookingStepTitle: string;
+  bookingStepDetail: string;
+  reserveFailed: boolean;
+  appointmentFailed: boolean;
+  bookingFailed: boolean;
+  bookingReservationBlocked: boolean;
+}) {
+  const { t } = useI18n();
+  const productCompletion = hasProductSelection(lead);
+  const depositCompletion = hasRequestedDeposit(lead);
+  const depositReceived = hasReceivedDeposit(lead);
+  const appointmentCompletion = hasAppointment(lead);
+  const bookingCompletion = hasBooking(lead);
+  const rentalWindowValue = hasRentalRequestContext(lead)
+    ? `${formatDateTime(lead.pickupDate)} - ${formatDateTime(lead.returnDate)}`
+    : t('lead.no_pickup_date.title');
+  const appointmentValue = lead.appointmentId
+    ? (lead.appointmentStatus ? t(`appointment.status.${lead.appointmentStatus}`) : t('lead.actions.open_appointment'))
+    : t('lead.empty.appointment');
+  const appointmentDetail = lead.appointmentTime
+    ? formatDateTime(lead.appointmentTime)
+    : depositReceived
+      ? t('lead.appointment.missing_after_deposit')
+      : t('lead.appointment.waiting_completion');
+  const riskMessage = reserveFailed
+    ? t('lead.deposit.reserve_failed')
+    : appointmentFailed
+      ? t('lead.deposit.appointment_failed')
+      : bookingFailed
+        ? t('lead.booking.creationFailed')
+        : bookingReservationBlocked
+          ? t('lead.booking.reserveRequiredHelper')
+          : !productCompletion
+            ? t('lead.no_product.description')
+            : !hasRentalRequestContext(lead)
+              ? t('lead.no_pickup_date.description')
+              : !depositCompletion
+                ? t('leadFlow.stepDesc.requestDeposit')
+                : !depositReceived
+                  ? t('leadFlow.stepDesc.receiveDeposit')
+                  : !appointmentCompletion
+                    ? t('lead.appointment.missing_after_deposit')
+                    : !bookingCompletion
+                      ? bookingStepDetail
+                      : t('lead.booking.locked');
+  const riskTone: Tone = reserveFailed || appointmentFailed || bookingFailed || bookingReservationBlocked || lead.status === 'deposit_expired'
+    ? 'danger'
+    : !productCompletion || !hasRentalRequestContext(lead) || !depositCompletion || !depositReceived || !appointmentCompletion || !bookingCompletion
+      ? 'warning'
+      : 'success';
+  const riskPanelClass: Record<Tone, string> = {
+    neutral: 'border-[rgb(var(--surface-border))]/65 bg-[rgb(var(--surface-3))]/50',
+    info: 'border-[rgb(var(--info))/18] bg-[rgb(var(--info))/7]',
+    success: 'border-[rgb(var(--success))/18] bg-[rgb(var(--success))/8]',
+    warning: 'border-[rgb(var(--warning))/22] bg-[rgb(var(--warning))/8]',
+    danger: 'border-[rgb(var(--danger))/22] bg-[rgb(var(--danger))/8]',
+    accent: 'border-[rgb(var(--accent-solid))/18] bg-[rgb(var(--accent-solid))/8]',
+  };
+  return (
+    <section className="overflow-hidden rounded-[32px] border border-[rgb(var(--surface-border))]/70 bg-[linear-gradient(135deg,rgb(var(--surface-2))_0%,rgb(var(--surface))_55%,rgb(var(--surface-3))_100%)] p-5 shadow-[0_24px_70px_rgba(15,23,42,0.075)] md:p-6">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[rgb(var(--text-muted))]">
+            {t('leadOps.ui.leadCockpit')}
+          </p>
+          <h2 className="mt-2 truncate text-3xl font-semibold tracking-[-0.05em] text-[rgb(var(--text-primary))] md:text-4xl">
+            {lead.customerName}
+          </h2>
+          <p className="mt-2 text-sm leading-6 text-[rgb(var(--text-secondary))]">
+            {lead.phone} / {lead.email}
+          </p>
+          <p className="mt-1 text-xs leading-5 text-[rgb(var(--text-muted))]">
+            {translateLeadSource(lead.source, t)} / {lead.ownerName}
+          </p>
+        </div>
+
+        <div className="flex flex-wrap gap-2 lg:justify-end">
+          <StatusBadge value={lead.status} tone={statusTone(lead)} />
+          <AdminBadge tone="accent">{nextStep}</AdminBadge>
+          {isManualLead(lead) ? <AdminBadge tone="warning">{t('leadOps.ui.manual')}</AdminBadge> : null}
+        </div>
+      </div>
+
+      <div className="mt-6 grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_360px]">
+        <div className="grid gap-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <DetailField
+              label={t('lead.source')}
+              value={translateLeadSource(lead.source, t)}
+              helper={productCompletion ? productDetail : t('lead.manual.description')}
+            />
+            <DetailField
+              label={t('leadOps.ui.owner')}
+              value={lead.ownerName}
+              helper={t('leadOps.ui.ownerHelper')}
+            />
+            <DetailField
+              label={t('leadOps.ui.rentalWindow')}
+              value={rentalWindowValue}
+              helper={productStepDetail}
+            />
+            <DetailField
+              label={t('leadFlow.summary.appointmentType')}
+              value={t(`leadFlow.intent.${lead.appointmentIntent}`)}
+              helper={appointmentValue}
+            />
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            <MetricTile
+              label={t('lead.products.total_value')}
+              value={currency.format(productValue)}
+              helper={productDetail}
+            />
+            <MetricTile
+              label={t('lead.products.total_rental')}
+              value={currency.format(rentalValue)}
+              helper={t('leadOps.deposit.rentalValueHelper')}
+              tone="accent"
+            />
+            <MetricTile
+              label={t('lead.deposit.required')}
+              value={currency.format(depositRequestedAmount || 0)}
+              helper={depositDeadlineState}
+              tone={depositCompletion ? 'warning' : 'neutral'}
+            />
+            <MetricTile
+              label={t('lead.deposit.paid')}
+              value={currency.format(depositPaidAmount || 0)}
+              helper={t('leadOps.ui.depositPaidHelper')}
+              tone={depositReceived ? 'success' : 'neutral'}
+            />
+            <MetricTile
+              label={t('lead.deposit.remaining')}
+              value={currency.format(depositRemainingAmount || 0)}
+              helper={requestDepositHelper}
+              tone={depositRemainingAmount > 0 ? 'warning' : 'success'}
+            />
+          </div>
+        </div>
+
+        <div className="rounded-[28px] border border-[rgb(var(--surface-border))]/70 bg-[rgb(var(--surface-2))]/78 p-5 shadow-[0_18px_44px_rgba(15,23,42,0.05)]">
+          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">
+            {t('leadOps.ui.nextBestAction')}
+          </p>
+          <p className="mt-2 text-2xl font-semibold tracking-[-0.04em] text-[rgb(var(--text-primary))]">
+            {nextStep}
+          </p>
+
+          <div className="mt-4 grid gap-3">
+            <DetailField
+              label={t('lead.deposit.deadline')}
+              value={depositDeadlineState}
+              helper={requestDepositHelper}
+            />
+            <DetailField
+              label={t('lead.flow.appointment')}
+              value={appointmentValue}
+              helper={appointmentDetail}
+            />
+            <DetailField
+              label={t('lead.flow.booking')}
+              value={bookingStepTitle}
+              helper={bookingStepDetail}
+            />
+          </div>
+
+          <div className={cn('mt-4 rounded-[22px] border p-4', riskPanelClass[riskTone])}>
+            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">
+              {t('leadOps.ui.dangerZone')}
+            </p>
+            <p className="mt-2 text-sm font-semibold leading-6 text-[rgb(var(--text-primary))]">
+              {riskMessage}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-6 border-t border-[rgb(var(--surface-border))]/55 pt-5">
+        <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">
+              {t('leadFlow.panel.title')}
+            </p>
+            <p className="mt-1 text-sm leading-6 text-[rgb(var(--text-secondary))]">
+              {t('leadFlow.panel.description')}
+            </p>
+          </div>
+          <AdminBadge tone="accent">{nextStep}</AdminBadge>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <OverviewStageCard
+            icon={<BoxIcon />}
+            title={t('leadFlow.steps.product')}
+            value={productCompletion ? productDetail : t('lead.no_product.title')}
+            detail={productStepDetail}
+            tone={productCompletion ? 'success' : 'warning'}
+            statusLabel={productCompletion ? t('lead.flow.complete') : t('lead.flow.pending')}
+          />
+          <OverviewStageCard
+            icon={<WalletIcon />}
+            title={t('leadFlow.steps.requestDeposit')}
+            value={depositCompletion ? t(`lead.status.${lead.status}`) : t('lead.deposit.missing')}
+            detail={depositCompletion ? depositDeadlineState : t('lead.deposit.reserve_pending')}
+            tone={lead.status === 'deposit_expired' ? 'danger' : depositCompletion ? 'success' : productCompletion ? 'warning' : 'neutral'}
+            statusLabel={depositCompletion ? t('lead.flow.complete') : productCompletion ? t('lead.flow.pending') : t('lead.flow.blocked')}
+          />
+          <OverviewStageCard
+            icon={<DotIcon />}
+            title={t('leadFlow.steps.receiveDeposit')}
+            value={depositReceived ? t('lead.deposit.reserved') : t('lead.actions.confirm_deposit')}
+            detail={depositReceived ? currency.format(depositPaidAmount || 0) : t('lead.deposit.reserve_pending')}
+            tone={reserveFailed ? 'danger' : depositReceived ? 'success' : depositCompletion ? 'info' : 'neutral'}
+            statusLabel={depositReceived ? t('lead.flow.complete') : depositCompletion ? t('lead.flow.pending') : t('lead.flow.blocked')}
+          />
+          <OverviewStageCard
+            icon={<CalendarIcon />}
+            title={t('leadFlow.steps.appointment')}
+            value={appointmentValue}
+            detail={appointmentDetail}
+            tone={appointmentCompletion ? 'success' : appointmentIsRecoverable(lead) || appointmentFailed ? 'warning' : 'neutral'}
+            statusLabel={appointmentCompletion ? t('lead.flow.complete') : appointmentIsRecoverable(lead) || appointmentFailed ? t('lead.flow.pending') : t('lead.flow.blocked')}
+          />
+          <OverviewStageCard
+            icon={<CheckIcon />}
+            title={t('leadFlow.steps.booking')}
+            value={bookingStepTitle}
+            detail={bookingStepDetail}
+            tone={bookingCompletion ? 'success' : bookingFailed ? 'info' : bookingReservationBlocked ? 'warning' : 'neutral'}
+            statusLabel={bookingCompletion ? t('lead.flow.complete') : canCreateBookingOverride(lead) ? t('lead.flow.pending') : t('lead.flow.blocked')}
+          />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ActionGroup({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="grid gap-2">
+      <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">
+        {title}
+      </p>
+      <div className="grid gap-2">{children}</div>
     </div>
   );
 }
@@ -442,52 +986,246 @@ function FlowStepCard({
   isLast?: boolean;
 }) {
   const tones: Record<Tone, string> = {
-    neutral: 'border-[rgb(var(--surface-border))]/85 bg-[rgb(var(--surface-3))]/76',
+    neutral: 'border-[rgb(var(--surface-border))]/75 bg-[rgb(var(--surface-3))]/52',
     info: 'border-[rgb(var(--info))/18] bg-[rgb(var(--info))/7]',
-    success: 'border-[rgb(var(--success))/18] bg-[rgb(var(--success))/9]',
+    success: 'border-[rgb(var(--success))/18] bg-[rgb(var(--success))/8]',
     warning: 'border-[rgb(var(--warning))/22] bg-[rgb(var(--warning))/8]',
     danger: 'border-[rgb(var(--danger))/22] bg-[rgb(var(--danger))/8]',
     accent: 'border-[rgb(var(--accent-solid))/18] bg-[rgb(var(--accent-solid))/8]',
   };
 
   return (
-    <div className="relative pl-16">
-      {!isLast ? <div className="absolute left-[27px] top-12 bottom-[-18px] w-px bg-[rgb(var(--surface-border))]/70" /> : null}
+    <div className="relative pl-14">
+      {!isLast ? (
+        <div className="absolute bottom-[-14px] left-[21px] top-11 w-px bg-[rgb(var(--surface-border))]/60" />
+      ) : null}
+
       <div
         className={cn(
-          'absolute left-0 top-1.5 flex h-14 w-14 items-center justify-center rounded-[22px] border shadow-[0_10px_26px_rgba(15,23,42,0.08)]',
+          'absolute left-0 top-1 flex h-11 w-11 items-center justify-center rounded-[18px] border shadow-[0_10px_24px_rgba(15,23,42,0.07)]',
           tones[tone],
-          state === 'current' && 'ring-4 ring-[rgb(var(--accent-strong))]/10',
-          state === 'locked' && 'opacity-72',
+          state === 'current' && 'ring-4 ring-[rgb(var(--accent-solid))]/10',
+          state === 'locked' && 'opacity-60',
         )}
       >
-        <span className={cn(
-          'text-[rgb(var(--text-primary))]',
-          state === 'locked' && 'text-[rgb(var(--text-muted))]',
-        )}
+        <span
+          className={cn(
+            'text-[rgb(var(--text-primary))]',
+            state === 'locked' && 'text-[rgb(var(--text-muted))]',
+          )}
         >
           {icon}
         </span>
       </div>
+
       <div
         className={cn(
-          'rounded-[26px] border p-4 shadow-[0_14px_34px_rgba(15,23,42,0.06)]',
+          'rounded-[22px] border p-4 transition',
           tones[tone],
-          state === 'current' && 'border-[rgb(var(--accent-strong))]/28 bg-[rgb(var(--surface-2))]',
+          state === 'current' &&
+            'border-[rgb(var(--accent-solid))]/30 bg-[rgb(var(--surface-2))] shadow-[0_16px_38px_rgba(15,23,42,0.06)]',
+          state === 'locked' && 'opacity-80',
         )}
       >
-        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[rgb(var(--text-muted))]">{step}</p>
-            <p className="mt-2 text-base font-semibold tracking-[-0.02em] text-[rgb(var(--text-primary))]">{title}</p>
-            <p className="mt-1.5 text-sm leading-6 text-[rgb(var(--text-secondary))]">{detail}</p>
+            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">
+              {step}
+            </p>
+            <p className="mt-1.5 truncate text-sm font-semibold tracking-[-0.015em] text-[rgb(var(--text-primary))]">
+              {title}
+            </p>
+            <p className="mt-1 text-xs leading-5 text-[rgb(var(--text-secondary))]">
+              {detail}
+            </p>
           </div>
+
           <AdminBadge tone={tone}>{statusLabel}</AdminBadge>
         </div>
-        {helper ? <p className="mt-3 text-xs leading-5 text-[rgb(var(--text-secondary))]">{helper}</p> : null}
-        {action ? <div className="mt-4 flex flex-wrap gap-2">{action}</div> : null}
+
+        {helper ? (
+          <p className="mt-2 line-clamp-2 text-xs leading-5 text-[rgb(var(--text-secondary))]">
+            {helper}
+          </p>
+        ) : null}
+
+        {action ? <div className="mt-3 flex flex-wrap gap-2">{action}</div> : null}
       </div>
     </div>
+  );
+}
+
+function CompactLeadSummary({
+  lead,
+  eyebrow,
+  nextStep,
+  sourceLabel,
+  nextStepLabel,
+  sourceFieldLabel,
+  ownerLabel,
+  statusBadge,
+  manualBadge,
+  ownerHelper,
+  rentalWindowFieldLabel,
+  rentalWindowHelper,
+  appointmentIntentLabel,
+  appointmentIntentValue,
+}: {
+  lead: LeadDetail;
+  eyebrow: string;
+  nextStep: string;
+  sourceLabel: string;
+  nextStepLabel: string;
+  sourceFieldLabel: string;
+  ownerLabel: string;
+  statusBadge: ReactNode;
+  manualBadge?: ReactNode;
+  ownerHelper: string;
+  rentalWindowFieldLabel: string;
+  rentalWindowHelper: string;
+  appointmentIntentLabel: string;
+  appointmentIntentValue: string;
+}) {
+  return (
+    <section className="rounded-[32px] border border-[rgb(var(--surface-border))]/70 bg-[rgb(var(--surface-2))]/88 p-5 shadow-[0_18px_48px_rgba(15,23,42,0.045)] md:p-6">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">
+            {eyebrow}
+          </p>
+          <h2 className="mt-2 truncate text-2xl font-semibold tracking-[-0.04em] text-[rgb(var(--text-primary))] md:text-[2rem]">
+            {lead.customerName}
+          </h2>
+          <p className="mt-1 text-sm text-[rgb(var(--text-secondary))]">
+            {lead.phone} / {lead.email}
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+          {statusBadge}
+          {manualBadge}
+        </div>
+      </div>
+
+      <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        <DetailField label={nextStepLabel} value={nextStep} helper={rentalWindowHelper} />
+        <DetailField label={sourceFieldLabel} value={sourceLabel} />
+        <DetailField label={ownerLabel} value={lead.ownerName} helper={ownerHelper} />
+        <DetailField
+          label={rentalWindowFieldLabel}
+          value={lead.pickupDate && lead.returnDate ? `${formatDate(lead.pickupDate)} - ${formatDate(lead.returnDate)}` : '-'}
+        />
+        <DetailField label={appointmentIntentLabel} value={appointmentIntentValue} />
+      </div>
+    </section>
+  );
+}
+
+function WorkflowRail({
+  eyebrow,
+  description,
+  items,
+}: {
+  eyebrow: string;
+  description: string;
+  items: Array<{
+    step: string;
+    title: string;
+    detail: string;
+    helper?: string;
+    tone: Tone;
+    statusLabel: string;
+    state: 'completed' | 'current' | 'locked';
+  }>;
+}) {
+  const toneMap: Record<Tone, string> = {
+    neutral: 'border-[rgb(var(--surface-border))]/70 bg-[rgb(var(--surface-3))]/55',
+    info: 'border-[rgb(var(--info))/18] bg-[rgb(var(--info))/7]',
+    success: 'border-[rgb(var(--success))/18] bg-[rgb(var(--success))/7]',
+    warning: 'border-[rgb(var(--warning))/22] bg-[rgb(var(--warning))/8]',
+    danger: 'border-[rgb(var(--danger))/22] bg-[rgb(var(--danger))/8]',
+    accent: 'border-[rgb(var(--accent-solid))/18] bg-[rgb(var(--accent-solid))/8]',
+  };
+
+  return (
+    <section className="rounded-[32px] border border-[rgb(var(--surface-border))]/70 bg-[rgb(var(--surface))]/96 p-4 shadow-[0_16px_42px_rgba(15,23,42,0.04)] md:p-5">
+      <div className="mb-4 flex flex-col gap-1">
+        <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">
+          {eyebrow}
+        </p>
+        <p className="text-sm text-[rgb(var(--text-secondary))]">
+          {description}
+        </p>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        {items.map((item) => (
+          <div
+            key={`${item.step}-${item.title}`}
+            className={cn(
+              'rounded-[28px] border p-4 transition',
+              toneMap[item.tone],
+              item.state === 'current' && 'border-[rgb(var(--accent-solid))]/28 bg-[rgb(var(--surface-2))] shadow-[0_16px_36px_rgba(15,23,42,0.06)]',
+              item.state === 'locked' && 'opacity-70',
+            )}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-[rgb(var(--text-muted))]">
+                  {item.step}
+                </p>
+                <p className="mt-1.5 text-sm font-semibold text-[rgb(var(--text-primary))]">
+                  {item.title}
+                </p>
+              </div>
+              <AdminBadge tone={item.tone}>{item.statusLabel}</AdminBadge>
+            </div>
+            <p className="mt-3 text-xs leading-5 text-[rgb(var(--text-secondary))]">
+              {item.detail}
+            </p>
+            {item.helper ? (
+              <p className="mt-2 text-xs leading-5 text-[rgb(var(--text-muted))]">
+                {item.helper}
+              </p>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function CurrentActionPanel({
+  eyebrow,
+  title,
+  description,
+  primaryAction,
+  supportActions,
+}: {
+  eyebrow: string;
+  title: string;
+  description: string;
+  primaryAction: ReactNode;
+  supportActions?: ReactNode;
+}) {
+  return (
+    <SectionCard title={title} description={description}>
+      <div className="grid gap-4">
+        <div className="rounded-[28px] border border-[rgb(var(--accent-solid))]/18 bg-[rgb(var(--accent-solid))]/7 p-4">
+          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">
+            {eyebrow}
+          </p>
+          <div className="mt-3 flex flex-wrap gap-3">
+            {primaryAction}
+          </div>
+        </div>
+        {supportActions ? (
+          <div className="flex flex-wrap gap-2">
+            {supportActions}
+          </div>
+        ) : null}
+      </div>
+    </SectionCard>
   );
 }
 
@@ -508,9 +1246,9 @@ export default function LeadDetailPage() {
 
   const [lead, setLead] = useState<LeadDetail | null>(null);
   const [products, setProducts] = useState<ProductOption[]>([]);
-  const [inventoryItems, setInventoryItems] = useState<InventoryOption[]>([]);
   const [staff, setStaff] = useState<StaffOption[]>([]);
   const [auditRows, setAuditRows] = useState<AuditRow[]>([]);
+  const [paymentSummary, setPaymentSummary] = useState<LeadPaymentSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -521,10 +1259,7 @@ export default function LeadDetailPage() {
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
   const [selectDraft, setSelectDraft] = useState({
     productId: '',
-    variantId: '',
-    inventoryItemId: '',
-    size: '',
-    color: '',
+    productIds: [] as string[],
     pickupDate: '',
     returnDate: '',
     appointmentIntent: 'FITTING',
@@ -535,6 +1270,7 @@ export default function LeadDetailPage() {
     amount: null as number | null,
     paymentMethod: 'CASH' as PaymentMethod,
     description: '',
+    depositRate: 50,
   });
   const [editDraft, setEditDraft] = useState({
     notes: '',
@@ -543,7 +1279,6 @@ export default function LeadDetailPage() {
   const [assignDraft, setAssignDraft] = useState('');
   const canViewAuditLogs = can(userRole, 'view_audit_logs');
   const canManageUsers = can(userRole, 'manage_users');
-  const canCollectDeposit = canReceiveDepositByRole(userRole);
 
   const loadData = async () => {
     if (!leadId) return;
@@ -553,7 +1288,7 @@ export default function LeadDetailPage() {
       const requests: Array<Promise<any>> = [
         leadsApi.getById(leadId),
         productsApi.getAll(),
-        inventoryApi.getItems(),
+        paymentsApi.getByLead(leadId),
       ];
       if (canManageUsers) {
         requests.push(usersApi.getAll());
@@ -562,7 +1297,10 @@ export default function LeadDetailPage() {
         requests.push(auditLogsApi.getAll({ entityId: leadId }));
       }
       const results = await Promise.allSettled(requests);
-      const [leadRes, productsRes, inventoryRes, staffRes, auditRes] = results;
+      const [leadRes, productsRes, paymentSummaryRes] = results;
+      let resultIndex = 3;
+      const staffRes = canManageUsers ? results[resultIndex++] : undefined;
+      const auditRes = canViewAuditLogs ? results[resultIndex] : undefined;
 
       if (leadRes.status !== 'fulfilled') {
         throw leadRes.reason;
@@ -578,31 +1316,57 @@ export default function LeadDetailPage() {
         productsRes.status === 'fulfilled'
           ? (productsRes.value.data ?? []).map((row: any) => ({
               id: row.id,
-              name: row.name,
-              price: Number(row.price ?? 0),
-              imageUrl: row.image ?? parseImageList(row.imageUrls)[0] ?? undefined,
-              variants: (row.variants ?? []).map((variant: any) => ({
-                id: variant.id,
-                name: variant.name,
-                size: variant.size,
-                color: variant.color,
-                imageUrls: parseImageList(variant.imageUrls),
-              })),
+              name: row.name ?? row.code ?? row.id,
+              price: Number(row.rentalPrice ?? row.price ?? 0),
+              productValue: Number(row.productValue ?? row.price ?? 0),
+              rentalPrice: Number(row.rentalPrice ?? row.price ?? 0),
+              imageUrl: row.image ?? parseImageList(row.images)[0] ?? undefined,
+              qrCode: row.qrCode ?? row.code ?? undefined,
+              status: lower(row.status) || 'available',
+              variants: Array.isArray(row.variants)
+                ? row.variants.map((variant: any) => ({
+                    id: variant.id,
+                    name: variant.name,
+                    size: variant.size,
+                    color: variant.color,
+                    imageUrls: parseImageList(variant.imageUrls),
+                  }))
+                : [],
             }))
           : [],
       );
-      setInventoryItems(
-        inventoryRes.status === 'fulfilled'
-          ? (inventoryRes.value.data ?? []).map((item: any) => ({
-              id: item.id,
-              productId: item.productId,
-              variantId: item.variantId ?? undefined,
-              serialNumber: item.serialNumber,
-              status: lower(item.status),
-              productName: item.product?.name,
-              variantName: item.variant?.name,
-            }))
-          : [],
+      setPaymentSummary(
+        paymentSummaryRes.status === 'fulfilled'
+          ? {
+              productValue: Number(paymentSummaryRes.value.data?.summary?.productValue ?? 0),
+              rentalTotal: Number(paymentSummaryRes.value.data?.summary?.rentalTotal ?? 0),
+              selectedDepositType: String(paymentSummaryRes.value.data?.summary?.selectedDepositType ?? 'percent'),
+              selectedDepositRate: Number(paymentSummaryRes.value.data?.summary?.selectedDepositRate ?? 50),
+              customDepositAmount: paymentSummaryRes.value.data?.summary?.customDepositAmount == null ? null : Number(paymentSummaryRes.value.data?.summary?.customDepositAmount),
+              securityDepositRequiredByRate: Number(paymentSummaryRes.value.data?.summary?.securityDepositRequiredByRate ?? 0),
+              securityDepositFullAmount: Number(paymentSummaryRes.value.data?.summary?.securityDepositFullAmount ?? 0),
+              securityDepositPaid: Number(paymentSummaryRes.value.data?.summary?.securityDepositPaid ?? 0),
+              securityDepositRemainingForSelectedRate: Number(paymentSummaryRes.value.data?.summary?.securityDepositRemainingForSelectedRate ?? 0),
+              securityDepositRemainingForFull: Number(paymentSummaryRes.value.data?.summary?.securityDepositRemainingForFull ?? 0),
+              refundedAmount: Number(paymentSummaryRes.value.data?.summary?.refundedAmount ?? 0),
+              depositStatus: String(paymentSummaryRes.value.data?.summary?.depositStatus ?? 'none'),
+              depositDeadline: paymentSummaryRes.value.data?.summary?.depositDeadline ?? null,
+              canReserve: Boolean(paymentSummaryRes.value.data?.summary?.canReserve),
+              canReceiveDeposit: Boolean(paymentSummaryRes.value.data?.summary?.canReceiveDeposit),
+              canRefundDeposit: Boolean(paymentSummaryRes.value.data?.summary?.canRefundDeposit),
+              products: Array.isArray(paymentSummaryRes.value.data?.summary?.products)
+                ? paymentSummaryRes.value.data.summary.products.map((item: any) => ({
+                    id: item.id,
+                    name: item.name ?? '-',
+                    image: item.image ?? null,
+                    productValue: Number(item.productValue ?? 0),
+                    rentalPrice: Number(item.rentalPrice ?? 0),
+                    status: item.status,
+                    qrCode: item.qrCode,
+                  }))
+                : [],
+            }
+          : null,
       );
       setStaff(
         canManageUsers && staffRes?.status === 'fulfilled'
@@ -632,12 +1396,17 @@ export default function LeadDetailPage() {
 
   useEffect(() => {
     if (!lead) return;
+    const fallbackProductValue = sumLeadProductValue(lead.items);
+    const fallbackDepositSelection = resolveLeadDepositSelection(
+      fallbackProductValue,
+      paymentSummary?.selectedDepositRate ?? 50,
+      paymentSummary?.customDepositAmount ?? paymentSummary?.securityDepositRequiredByRate ?? lead.depositAmountRequired,
+    );
     setSelectDraft({
-      productId: lead.productId ?? '',
-      variantId: lead.variantId ?? '',
-      inventoryItemId: lead.inventoryItemId ?? '',
-      size: lead.requestedSize ?? '',
-      color: lead.requestedColor ?? '',
+      productId: lead.productId ?? lead.items[0]?.productId ?? '',
+      productIds: lead.items.length
+        ? lead.items.map((item) => item.productId).filter(Boolean)
+        : (lead.productId ? [lead.productId] : []),
       pickupDate: toDateTimeLocal(lead.pickupDate),
       returnDate: toDateTimeLocal(lead.returnDate),
       appointmentIntent: lead.appointmentIntent.toUpperCase(),
@@ -645,86 +1414,84 @@ export default function LeadDetailPage() {
       notes: lead.notes ?? '',
     });
     setReceiveDraft({
-      amount: lead.depositAmountRequired || lead.depositAmountPaid || null,
+      amount:
+        paymentSummary?.securityDepositRemainingForSelectedRate != null
+          ? paymentSummary.securityDepositRemainingForSelectedRate
+          : lead.depositAmountRequired > 0
+            ? lead.depositAmountRequired
+            : lead.depositAmountPaid > 0
+              ? lead.depositAmountPaid
+              : (fallbackDepositSelection.customDepositAmount ?? null),
       paymentMethod: 'CASH',
-      description: lead.productName ? `${lead.productName}` : '',
+      description: lead.items.length ? lead.items.map((item) => item.productName).join(', ') : (lead.productName ? `${lead.productName}` : ''),
+      depositRate: paymentSummary?.selectedDepositRate ?? 50,
     });
     setEditDraft({
       notes: lead.notes ?? '',
       quotedPrice: lead.quotedPrice || null,
     });
     setAssignDraft(lead.ownerId ?? '');
-  }, [lead]);
+  }, [lead, paymentSummary]);
 
-  const selectedProduct = useMemo(
-    () => products.find((product) => product.id === selectDraft.productId),
-    [products, selectDraft.productId],
+  const selectedProducts = useMemo(
+    () => products.filter((product) => selectDraft.productIds.includes(product.id)),
+    [products, selectDraft.productIds],
   );
-  const selectedVariant = useMemo(
-    () => selectedProduct?.variants.find((variant) => variant.id === selectDraft.variantId),
-    [selectedProduct, selectDraft.variantId],
+  const selectedProductsProductValue = useMemo(
+    () => selectedProducts.reduce((sum, product) => sum + Math.max(Number(product.productValue ?? product.price ?? 0), 0), 0),
+    [selectedProducts],
   );
-  const colorOptions = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          (selectedProduct?.variants ?? [])
-            .map((variant) => variant.color?.trim())
-            .filter(Boolean) as string[],
-        ),
-      ).map((value) => ({ value })),
-    [selectedProduct],
+  const selectedProductsRentalTotal = useMemo(
+    () => selectedProducts.reduce((sum, product) => sum + Math.max(Number(product.rentalPrice ?? product.price ?? 0), 0), 0),
+    [selectedProducts],
   );
-  const sizeOptions = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          (selectedProduct?.variants ?? [])
-            .map((variant) => variant.size?.trim())
-            .filter(Boolean) as string[],
-        ),
-      ).map((value) => ({ value })),
-    [selectedProduct],
+  const leadProductValue = useMemo(
+    () => {
+      if (paymentSummary) return Math.max(Number(paymentSummary.productValue || 0), 0);
+      if (lead?.items.length) return sumLeadProductValue(lead.items);
+      return selectedProductsProductValue;
+    },
+    [lead, paymentSummary?.productValue, selectedProductsProductValue],
   );
-  const matchingVariants = useMemo(
-    () =>
-      (selectedProduct?.variants ?? []).filter((variant) => {
-        const colorMatches = !selectDraft.color || lower(variant.color) === lower(selectDraft.color);
-        const sizeMatches = !selectDraft.size || lower(variant.size) === lower(selectDraft.size);
-        return colorMatches && sizeMatches;
-      }),
-    [selectedProduct, selectDraft.color, selectDraft.size],
+  const draftHasRentalContext = Boolean(selectDraft.productIds.length && selectDraft.pickupDate && selectDraft.returnDate);
+  const selectedProductsDepositPolicy = useMemo(
+    () => leadDepositChoices(selectedProductsProductValue),
+    [selectedProductsProductValue],
   );
-  const filteredInventoryItems = useMemo(
-    () =>
-      inventoryItems.filter((item) => {
-        if (!selectDraft.productId || item.productId !== selectDraft.productId) return false;
-        if (selectDraft.variantId && item.variantId !== selectDraft.variantId) return false;
-        if (item.id === lead?.inventoryItemId) return true;
-        return item.status === 'available';
-      }),
-    [inventoryItems, lead?.inventoryItemId, selectDraft.productId, selectDraft.variantId],
+  const currentLeadDepositPolicy = useMemo(
+    () => leadDepositChoices(leadProductValue),
+    [leadProductValue],
   );
-  const selectProductValidationMessage = !selectDraft.productId
+  const draftDepositPreviewAmount = useMemo(
+    () => {
+      if (selectedProductsProductValue <= 0) return 0;
+      return resolveLeadDepositSelection(
+        selectedProductsProductValue,
+        receiveDraft.depositRate,
+        receiveDraft.amount ?? selectedProductsDepositPolicy.defaultAmount,
+      ).customDepositAmount ?? 0;
+    },
+    [receiveDraft.amount, receiveDraft.depositRate, selectedProductsDepositPolicy.defaultAmount, selectedProductsProductValue],
+  );
+  const showDraftDepositPreview = Boolean(
+    lead
+    && canEditProduct(lead)
+    && selectedProductsProductValue > 0,
+  );
+
+  useEffect(() => {
+    if (!lead || !canEditProduct(lead)) return;
+    setReceiveDraft((current) => ({
+      ...current,
+      amount: selectedProductsProductValue > 0 ? draftDepositPreviewAmount : null,
+    }));
+  }, [draftDepositPreviewAmount, lead, selectedProductsProductValue]);
+
+  const selectProductValidationMessage = !selectDraft.productIds.length
     ? t('leadFlow.validation.productRequired')
     : !selectDraft.pickupDate || !selectDraft.returnDate
       ? t('leadFlow.validation.rentalDatesRequired')
       : null;
-
-  useEffect(() => {
-    if (!selectedProduct) return;
-    const currentVariantStillValid = selectedProduct.variants.some((variant) => variant.id === selectDraft.variantId);
-    const resolvedVariantId =
-      matchingVariants.length === 1
-        ? matchingVariants[0].id
-        : currentVariantStillValid
-          ? selectDraft.variantId
-          : '';
-
-    if (resolvedVariantId !== selectDraft.variantId) {
-      setSelectDraft((current) => ({ ...current, variantId: resolvedVariantId, inventoryItemId: '' }));
-    }
-  }, [matchingVariants, selectedProduct, selectDraft.variantId]);
 
   const timelineItems = useMemo(() => {
     if (auditRows.length) {
@@ -743,7 +1510,7 @@ export default function LeadDetailPage() {
     if (!lead) return [];
 
     return [
-      { time: formatDateTime(lead.createdAt), title: t('leadOps.timeline.created'), detail: lead.source, tone: 'neutral' as Tone },
+      { time: formatDateTime(lead.createdAt), title: t('leadOps.timeline.created'), detail: translateLeadSource(lead.source, t), tone: 'neutral' as Tone },
       lead.contactedAt ? { time: formatDateTime(lead.contactedAt), title: t('leadOps.timeline.contacted'), detail: lead.ownerName, tone: 'info' as Tone } : null,
       lead.depositRequestedAt ? { time: formatDateTime(lead.depositRequestedAt), title: t('leadOps.timeline.depositRequested'), detail: formatDateTime(lead.depositDeadlineAt), tone: 'warning' as Tone } : null,
       lead.depositReceivedAt ? { time: formatDateTime(lead.depositReceivedAt), title: t('leadOps.timeline.depositReceived'), detail: t('lead.appointment.auto_created'), tone: 'success' as Tone } : null,
@@ -775,11 +1542,8 @@ export default function LeadDetailPage() {
       `select-product-${lead.id}`,
       async () => {
         await leadsApi.selectProduct(lead.id, {
-          productId: selectDraft.productId,
-          variantId: selectDraft.variantId || undefined,
-          inventoryItemId: selectDraft.inventoryItemId || undefined,
-          size: selectDraft.size || undefined,
-          color: selectDraft.color || undefined,
+          productId: selectDraft.productIds[0],
+          productIds: selectDraft.productIds,
           pickupDate: toIsoOrUndefined(selectDraft.pickupDate),
           returnDate: toIsoOrUndefined(selectDraft.returnDate),
           appointmentIntent: selectDraft.appointmentIntent,
@@ -793,12 +1557,20 @@ export default function LeadDetailPage() {
 
   const requestDeposit = async () => {
     if (!lead) return;
+    const depositSelection = resolveLeadDepositSelection(
+      leadProductValue,
+      receiveDraft.depositRate,
+      receiveDraft.amount,
+    );
     await runAction(
       `request-deposit-${lead.id}`,
       async () => {
         await leadsApi.requestDeposit(lead.id, {
           quotedPrice: lead.quotedPrice || undefined,
-          depositAmount: lead.depositAmountRequired || undefined,
+          depositAmount: (receiveDraft.amount ?? lead.depositAmountRequired) || undefined,
+          depositRate: receiveDraft.depositRate,
+          depositType: depositSelection.depositType,
+          customDepositAmount: depositSelection.customDepositAmount,
         });
       },
       t('lead.feedback.depositRequested'),
@@ -807,6 +1579,11 @@ export default function LeadDetailPage() {
 
   const receiveDeposit = async () => {
     if (!lead) return;
+    const depositSelection = resolveLeadDepositSelection(
+      leadProductValue,
+      receiveDraft.depositRate,
+      receiveDraft.amount,
+    );
     await runAction(
       `receive-deposit-${lead.id}`,
       async () => {
@@ -814,6 +1591,9 @@ export default function LeadDetailPage() {
           amount: Number(receiveDraft.amount),
           paymentMethod: receiveDraft.paymentMethod,
           description: receiveDraft.description || undefined,
+          depositRate: receiveDraft.depositRate,
+          depositType: depositSelection.depositType,
+          customDepositAmount: depositSelection.customDepositAmount,
         });
         setReceiveOpen(false);
       },
@@ -849,6 +1629,39 @@ export default function LeadDetailPage() {
       `create-booking-${lead.id}`,
       async () => {
         await leadsApi.convertToBooking(lead.id);
+      },
+      t('leadFlow.success.bookingCreated'),
+    );
+  };
+
+  const refundDeposit = async () => {
+    if (!lead) return;
+    await runAction(
+      `refund-deposit-${lead.id}`,
+      async () => {
+        await leadsApi.refundDeposit(lead.id);
+      },
+      t('lead.feedback.depositRefunded'),
+    );
+  };
+
+  const retryAppointment = async () => {
+    if (!lead) return;
+    await runAction(
+      `retry-appointment-${lead.id}`,
+      async () => {
+        await leadsApi.retryAppointment(lead.id);
+      },
+      t('lead.feedback.appointmentCreated'),
+    );
+  };
+
+  const retryBooking = async () => {
+    if (!lead) return;
+    await runAction(
+      `retry-booking-${lead.id}`,
+      async () => {
+        await leadsApi.retryBooking(lead.id);
       },
       t('leadFlow.success.bookingCreated'),
     );
@@ -960,7 +1773,9 @@ export default function LeadDetailPage() {
   }
 
   const productDetail = hasProductSelection(lead)
-    ? `${lead.productName ?? '-'}${lead.variantName ? ` / ${lead.variantName}` : ''}`
+    ? lead.items.length
+      ? `${lead.items.length} sản phẩm`
+      : `${lead.productName ?? '-'}`
     : t('lead.no_product.title');
   const productStepDetail = !hasProductSelection(lead)
     ? t('lead.no_product.description')
@@ -973,17 +1788,207 @@ export default function LeadDetailPage() {
       ? t('leadFlow.helper.depositDeadline')
       : t('leadFlow.stepDesc.requestDeposit');
 
-  const depositDeadlineLabel = lead.depositDeadlineAt ? formatDateTime(lead.depositDeadlineAt) : t('leadOps.notSet');
-  const depositWindow = minutesUntil(lead.depositDeadlineAt);
+  const depositDeadlineSource = paymentSummary?.depositDeadline ?? lead.depositDeadlineAt;
+  const depositDeadlineLabel = depositDeadlineSource ? formatDateTime(depositDeadlineSource) : t('leadOps.notSet');
+  const depositWindow = minutesUntil(depositDeadlineSource ?? undefined);
   const depositDeadlineState =
     depositWindow === null ? t('leadOps.notSet') : depositWindow < 0 ? t('lead.deposit.expired') : depositDeadlineLabel;
-  const availableInventoryCount = filteredInventoryItems.filter((item) => item.id !== lead.inventoryItemId).length + (lead.inventoryItemId ? 1 : 0);
+  const productValue = showDraftDepositPreview ? selectedProductsProductValue : leadProductValue;
+  const rentalValue = showDraftDepositPreview
+    ? selectedProductsRentalTotal
+    : paymentSummary?.rentalTotal ?? (lead.items.length
+      ? lead.items.reduce((sum, item) => sum + Math.max(Number(item.rentalPrice || 0), 0), 0)
+      : selectedProductsRentalTotal);
+  const effectiveDepositAmount = showDraftDepositPreview
+    ? draftDepositPreviewAmount
+    : paymentSummary?.customDepositAmount ?? paymentSummary?.securityDepositRequiredByRate ?? lead.depositAmountRequired;
+  const effectiveDepositPolicy = showDraftDepositPreview ? selectedProductsDepositPolicy : currentLeadDepositPolicy;
+  const selectedDepositOption = effectiveDepositPolicy.options.find((option) => option.amount === effectiveDepositAmount) ?? effectiveDepositPolicy.options[0];
+  const depositRequestedAmount = showDraftDepositPreview ? draftDepositPreviewAmount : paymentSummary?.securityDepositRequiredByRate ?? lead.depositAmountRequired;
+  const depositPaidAmount = showDraftDepositPreview ? 0 : paymentSummary?.securityDepositPaid ?? lead.depositAmountPaid;
+  const depositRemainingForSelectedRate = showDraftDepositPreview
+    ? Math.max(draftDepositPreviewAmount - depositPaidAmount, 0)
+    : paymentSummary?.securityDepositRemainingForSelectedRate ?? Math.max(depositRequestedAmount - depositPaidAmount, 0);
+  const depositRemainingForFull = showDraftDepositPreview
+    ? Math.max(selectedProductsProductValue - depositPaidAmount, 0)
+    : paymentSummary?.securityDepositRemainingForFull ?? Math.max(productValue - depositPaidAmount, 0);
+  const canRefundLeadDeposit = Boolean(paymentSummary?.canRefundDeposit && !hasBooking(lead));
+  const canRequestDepositNow = canRequestDeposit(lead, userRole);
+  const canReceiveDepositNow = canReceiveDeposit(lead, userRole);
   const productCompletion = hasProductSelection(lead);
   const depositCompletion = hasRequestedDeposit(lead);
   const depositReceived = hasReceivedDeposit(lead);
   const appointmentCompletion = hasAppointment(lead);
   const bookingCompletion = hasBooking(lead);
-
+  const reserveFailed = lead.workflowBlockCode === 'reserve_failed';
+  const appointmentFailed = lead.workflowBlockCode === 'appointment_failed';
+  const bookingFailed = lead.workflowBlockCode === 'booking_failed';
+  const bookingReservationBlocked = lead.status === 'appointment_completed' && !hasReservedProducts(lead) && !bookingCompletion && !bookingFailed;
+  const bookingStepTitle = lead.bookingId
+    ? lead.bookingId
+    : canCreateBookingOverride(lead)
+      ? t('lead.booking.ready')
+      : bookingReservationBlocked
+        ? t('lead.booking.reserveRequired')
+        : t('lead.empty.booking');
+  const bookingStepDetail = lead.bookingStatus
+    ? t(`booking.status.${lead.bookingStatus}`)
+    : bookingReservationBlocked
+      ? t('lead.booking.reserveRequiredHelper')
+      : lead.appointmentStatus === 'completed'
+        ? t('lead.booking.ready')
+        : t('lead.appointment.waiting_completion');
+  const bookingStepHelper = hasBooking(lead)
+    ? t('lead.booking.locked')
+    : bookingReservationBlocked
+      ? t('lead.booking.reserveRequiredHelper')
+      : t('leadFlow.stepDesc.booking');
+  const bookingSectionDescription = hasBooking(lead)
+    ? t('lead.booking.locked')
+    : bookingReservationBlocked
+      ? t('lead.booking.reserveRequiredHelper')
+      : t('lead.appointment.waiting_completion');
+  const nextStepLabel = t(nextStepKey(lead));
+  const sourceLabel = translateLeadSource(lead.source, t);
+  const workflowItems = [
+    {
+      step: t('leadFlow.steps.product'),
+      title: productCompletion ? productDetail : t('lead.no_product.title'),
+      detail: productStepDetail,
+      helper: !productCompletion ? t('lead.manual.description') : t('leadFlow.stepDesc.product'),
+      tone: productCompletion ? 'success' as Tone : canEditProduct(lead) ? 'warning' as Tone : 'neutral' as Tone,
+      statusLabel: productCompletion ? t('lead.flow.complete') : canEditProduct(lead) ? t('lead.flow.pending') : t('lead.flow.blocked'),
+      state: productCompletion ? 'completed' as const : canEditProduct(lead) ? 'current' as const : 'locked' as const,
+    },
+    {
+      step: t('leadFlow.steps.requestDeposit'),
+      title: depositCompletion ? t(`lead.status.${lead.status}`) : t('lead.deposit.missing'),
+      detail: depositCompletion ? depositDeadlineLabel : t('lead.deposit.reserve_pending'),
+      helper: requestDepositHelper,
+      tone: lead.status === 'deposit_expired' ? 'danger' as Tone : depositCompletion ? 'success' as Tone : productCompletion ? 'warning' as Tone : 'neutral' as Tone,
+      statusLabel: depositCompletion ? t('lead.flow.complete') : canRequestDeposit(lead, userRole) ? t('lead.flow.pending') : t('lead.flow.blocked'),
+      state: depositCompletion ? 'completed' as const : canRequestDeposit(lead, userRole) ? 'current' as const : 'locked' as const,
+    },
+    {
+      step: t('leadFlow.steps.receiveDeposit'),
+      title: depositReceived ? t('lead.deposit.reserved') : t('lead.actions.confirm_deposit'),
+      detail: depositReceived ? currency.format(depositPaidAmount || 0) : t('lead.deposit.reserve_pending'),
+      helper: depositReceived ? t('lead.appointment.auto_created') : t('leadFlow.helper.autoReserve'),
+      tone: reserveFailed ? 'warning' as Tone : depositReceived ? 'success' as Tone : canReceiveDeposit(lead, userRole) ? 'info' as Tone : 'neutral' as Tone,
+      statusLabel: depositReceived ? t('lead.flow.complete') : canReceiveDeposit(lead, userRole) ? t('lead.flow.pending') : t('lead.flow.blocked'),
+      state: depositReceived ? 'completed' as const : canReceiveDeposit(lead, userRole) ? 'current' as const : 'locked' as const,
+    },
+    {
+      step: t('leadFlow.steps.appointment'),
+      title: lead.appointmentId ? (lead.appointmentStatus ? t(`appointment.status.${lead.appointmentStatus}`) : t('lead.actions.open_appointment')) : t('lead.empty.appointment'),
+      detail: lead.appointmentTime ? formatDateTime(lead.appointmentTime) : hasReceivedDeposit(lead) ? t('lead.appointment.missing_after_deposit') : t('lead.appointment.waiting_completion'),
+      helper: lead.appointmentId ? t('leadFlow.next.completeAppointment') : t('leadFlow.helper.autoAppointment'),
+      tone: lead.appointmentId ? 'success' as Tone : appointmentIsRecoverable(lead) || appointmentFailed || canCompleteAppointment(lead) ? 'warning' as Tone : 'neutral' as Tone,
+      statusLabel: lead.appointmentId ? t('lead.flow.complete') : appointmentIsRecoverable(lead) || appointmentFailed || canCompleteAppointment(lead) ? t('lead.flow.pending') : t('lead.flow.blocked'),
+      state: lead.appointmentId ? 'completed' as const : appointmentIsRecoverable(lead) || appointmentFailed || canCompleteAppointment(lead) ? 'current' as const : 'locked' as const,
+    },
+    {
+      step: t('leadFlow.steps.booking'),
+      title: bookingStepTitle,
+      detail: bookingStepDetail,
+      helper: bookingStepHelper,
+      tone: bookingCompletion ? 'success' as Tone : (bookingFailed && canCreateBookingOverride(lead)) || (lead.status === 'appointment_completed' && !hasBooking(lead) && !bookingReservationBlocked) ? 'info' as Tone : bookingReservationBlocked ? 'warning' as Tone : 'neutral' as Tone,
+      statusLabel: bookingCompletion ? t('lead.flow.complete') : canCreateBookingOverride(lead) || (lead.status === 'appointment_completed' && !hasBooking(lead) && !bookingReservationBlocked) ? t('lead.flow.pending') : t('lead.flow.blocked'),
+      state: bookingCompletion ? 'completed' as const : canCreateBookingOverride(lead) || (lead.status === 'appointment_completed' && !hasBooking(lead) && !bookingReservationBlocked) ? 'current' as const : 'locked' as const,
+    },
+  ];
+  const currentActionConfig = lead.bookingId
+    ? {
+        title: t('lead.actions.open_booking'),
+        description: bookingStepHelper,
+        primaryAction: <Link className="button-primary" href={`/admin/bookings/${lead.bookingId}`}>{t('lead.actions.open_booking')}</Link>,
+      }
+    : canCreateBookingOverride(lead)
+      ? {
+          title: t('lead.actions.retry_booking'),
+          description: t('lead.booking.creationFailed'),
+          primaryAction: <AdminButton onClick={retryBooking} loading={busyAction === `retry-booking-${lead.id}`}>{t('lead.actions.retry_booking')}</AdminButton>,
+        }
+      : lead.status === 'appointment_completed' && !hasBooking(lead) && !bookingReservationBlocked && !bookingFailed
+        ? {
+            title: t('leadFlow.steps.booking'),
+            description: t('leadFlow.stepDesc.booking'),
+            primaryAction: <AdminButton onClick={createBooking} loading={busyAction === `create-booking-${lead.id}`}>{t('lead.actions.open_booking')}</AdminButton>,
+          }
+        : canCompleteAppointment(lead)
+          ? {
+              title: t('lead.actions.complete_appointment'),
+              description: t('leadFlow.next.completeAppointment'),
+              primaryAction: <AdminButton onClick={completeAppointment} loading={busyAction === `complete-appointment-${lead.appointmentId}`}>{t('lead.actions.complete_appointment')}</AdminButton>,
+            }
+          : appointmentFailed
+            ? {
+                title: t('lead.actions.retry_appointment'),
+                description: t('lead.deposit.appointment_failed'),
+                primaryAction: <AdminButton onClick={retryAppointment} loading={busyAction === `retry-appointment-${lead.id}`}>{t('lead.actions.retry_appointment')}</AdminButton>,
+              }
+            : appointmentIsRecoverable(lead)
+              ? {
+                  title: t('lead.actions.recreate_appointment'),
+                  description: t('lead.appointment.missing_after_deposit'),
+                  primaryAction: <AdminButton onClick={recreateAppointment} loading={busyAction === `create-appointment-${lead.id}`}>{t('lead.actions.recreate_appointment')}</AdminButton>,
+                }
+              : canRequestDepositNow
+                ? {
+                    title: t('lead.actions.request_deposit'),
+                    description: requestDepositHelper,
+                    primaryAction: <AdminButton onClick={requestDeposit} loading={busyAction === `request-deposit-${lead.id}`} disabled={!canRequestDepositNow}>{t('lead.actions.request_deposit')}</AdminButton>,
+                  }
+                : canReceiveDepositNow
+                  ? {
+                      title: t('lead.actions.confirm_deposit'),
+                      description: t('leadOps.ui.cashierIntake'),
+                      primaryAction: <AdminButton onClick={() => setReceiveOpen(true)}>{t('lead.actions.confirm_deposit')}</AdminButton>,
+                    }
+                  : {
+                      title: t('leadFlow.actions.saveProduct'),
+                      description: t('leadFlow.stepDesc.product'),
+                      primaryAction: (
+                        <AdminButton
+                          onClick={selectProduct}
+                          loading={busyAction === `select-product-${lead.id}`}
+                          disabled={!canEditProduct(lead) || Boolean(selectProductValidationMessage)}
+                        >
+                          {t('leadFlow.actions.saveProduct')}
+                        </AdminButton>
+                      ),
+                    };
+  const renderDepositActionButtons = () => {
+    if (!canRequestDepositNow && !canReceiveDepositNow && !canRefundLeadDeposit) return null;
+    return (
+      <>
+        {canRequestDepositNow ? (
+          <AdminButton onClick={requestDeposit} loading={busyAction === `request-deposit-${lead.id}`} disabled={!canRequestDepositNow}>
+            {t('lead.actions.request_deposit')}
+          </AdminButton>
+        ) : null}
+        {canReceiveDepositNow ? (
+          <AdminButton variant="secondary" onClick={() => setReceiveOpen(true)}>
+            {t('lead.actions.confirm_deposit')}
+          </AdminButton>
+        ) : null}
+        {canRefundLeadDeposit ? (
+          <AdminButton variant="secondary" onClick={refundDeposit} loading={busyAction === `refund-deposit-${lead.id}`}>
+            {t('lead.actions.refund_deposit')}
+          </AdminButton>
+        ) : null}
+      </>
+    );
+  };
+  const hasDepositActionButtons = canRequestDepositNow || canReceiveDepositNow || canRefundLeadDeposit;
+  const riskAlerts = [
+    reserveFailed ? t('lead.deposit.reserve_failed') : null,
+    appointmentFailed ? t('lead.deposit.appointment_failed') : null,
+    bookingFailed ? t('lead.booking.creationFailed') : null,
+    bookingReservationBlocked ? t('lead.booking.reserveRequiredHelper') : null,
+    lead.status === 'deposit_expired' ? t('lead.deposit.expired') : null,
+    lead.workflowBlockMessage ?? null,
+  ].filter(Boolean) as string[];
   return (
     <>
       <FeedbackPopup
@@ -1020,364 +2025,400 @@ export default function LeadDetailPage() {
 
       {error ? <InlineAlert tone="warning">{error}</InlineAlert> : null}
       {feedback ? <div className="mt-4"><InlineAlert tone={feedback.tone}>{feedback.message}</InlineAlert></div> : null}
+      {lead.workflowBlockMessage ? <div className="mt-4"><InlineAlert tone="warning">{lead.workflowBlockMessage}</InlineAlert></div> : null}
 
-      <div className="mt-6">
-        <WorkspaceLayout
-          rail={(
-            <>
-              <RailSection title={t('lead.panels.quickActions')}>
-                <div className="space-y-2">
-                  <AdminButton className="w-full" onClick={callCustomer} loading={busyAction === `contact-${lead.id}`}>
+      <div className="mt-6 space-y-6">
+        <CompactLeadSummary
+          lead={lead}
+          eyebrow={t('lead.title')}
+          nextStep={nextStepLabel}
+          sourceLabel={sourceLabel}
+          nextStepLabel={t('leadOps.ui.nextBestAction')}
+          sourceFieldLabel={t('lead.source')}
+          ownerLabel={t('leadOps.ui.owner')}
+          ownerHelper={t('leadOps.ui.ownerHelper')}
+          rentalWindowFieldLabel={t('leadOps.ui.rentalWindow')}
+          rentalWindowHelper={productStepDetail}
+          appointmentIntentLabel={t('leadFlow.summary.appointmentType')}
+          appointmentIntentValue={t(`leadFlow.intent.${lead.appointmentIntent}`)}
+          statusBadge={<StatusBadge value={lead.status} tone={statusTone(lead)} />}
+          manualBadge={isManualLead(lead) ? <AdminBadge tone="warning">{t('lead.manual.badge')}</AdminBadge> : undefined}
+        />
+
+        <WorkflowRail eyebrow={t('leadFlow.panel.title')} description={t('leadFlow.panel.description')} items={workflowItems} />
+
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_390px]">
+          <main className="grid gap-6">
+            <CurrentActionPanel
+              eyebrow={t('leadOps.ui.nextBestAction')}
+              title={currentActionConfig.title}
+              description={currentActionConfig.description}
+              primaryAction={currentActionConfig.primaryAction}
+              supportActions={(
+                <>
+                  {renderDepositActionButtons()}
+                  <AdminButton variant="secondary" onClick={callCustomer} loading={busyAction === `contact-${lead.id}`}>
                     {t('lead.actions.call_customer')}
                   </AdminButton>
-                  <AdminButton variant="secondary" className="w-full" onClick={sendZalo} loading={busyAction === `zalo-${lead.id}`}>
+                  <AdminButton variant="secondary" onClick={sendZalo} loading={busyAction === `zalo-${lead.id}`}>
                     {t('lead.actions.send_zalo')}
                   </AdminButton>
-                  <AdminButton variant="secondary" className="w-full" onClick={() => setEditOpen(true)}>
-                    {t('lead.actions.edit_lead')}
-                  </AdminButton>
-                  <AdminButton variant="secondary" className="w-full" onClick={() => setAssignOpen(true)}>
-                    {t('lead.actions.assign_staff')}
-                  </AdminButton>
-                  <AdminButton
-                    className="w-full"
-                    onClick={requestDeposit}
-                    loading={busyAction === `request-deposit-${lead.id}`}
-                    disabled={!canRequestDeposit(lead, userRole)}
+                </>
+              )}
+            />
+
+            <FormBlock
+              title={t('lead.panels.productRequest')}
+              description={isManualLead(lead) ? t('lead.manual.description') : t('leadFlow.stepDesc.product')}
+              rightSlot={!canEditProduct(lead) ? <AdminBadge tone="neutral">{t('leadOps.ui.locked')}</AdminBadge> : undefined}
+            >
+              <ProductCardSelect
+                products={products}
+                description={t('leadFlow.helper.productOnlySelection')}
+                selectedProductId={selectDraft.productId}
+                onSelectProduct={(productId) =>
+                  setSelectDraft((current) => ({
+                    ...current,
+                    productId,
+                    productIds: current.productIds.includes(productId)
+                      ? current.productIds
+                      : [...current.productIds, productId],
+                  }))
+                }
+                disabled={!canEditProduct(lead)}
+              />
+
+              <div className="grid gap-3">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-semibold text-[rgb(var(--text-primary))]">{t('lead.products.title')}</p>
+                  <AdminBadge tone="info">{selectedProducts.length}</AdminBadge>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  {selectedProducts.length ? selectedProducts.map((product) => (
+                    <div key={product.id} className="rounded-[24px] border border-[rgb(var(--surface-border))]/70 bg-[rgb(var(--surface-3))]/55 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-[rgb(var(--text-primary))]">{product.name}</p>
+                          <p className="mt-1 text-xs text-[rgb(var(--text-secondary))]">
+                            {currency.format(product.productValue ?? product.price ?? 0)} / {currency.format(product.rentalPrice ?? product.price ?? 0)}
+                          </p>
+                          <p className="mt-1 font-mono text-[11px] text-[rgb(var(--text-muted))]">{product.qrCode ?? product.id}</p>
+                        </div>
+                        {canEditProduct(lead) ? (
+                          <button
+                            type="button"
+                            className="text-xs font-semibold text-[rgb(var(--danger))]"
+                            onClick={() => setSelectDraft((current) => ({
+                              ...current,
+                              productIds: current.productIds.filter((id) => id !== product.id),
+                              productId: current.productId === product.id ? current.productIds.filter((id) => id !== product.id)[0] ?? '' : current.productId,
+                            }))}
+                          >
+                            {t('common.remove')}
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  )) : (
+                    <div className="rounded-[24px] border border-dashed border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-3))]/55 px-4 py-5 text-sm text-[rgb(var(--text-secondary))]">
+                      {t('leadFlow.validation.productRequired')}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
+                  {t('leadFlow.form.pickupDate')}
+                  <AdminInput
+                    type="datetime-local"
+                    value={selectDraft.pickupDate}
+                    onChange={(event) => setSelectDraft((current) => ({ ...current, pickupDate: event.target.value }))}
+                    disabled={!canEditProduct(lead)}
+                  />
+                </label>
+
+                <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
+                  {t('leadFlow.form.returnDate')}
+                  <AdminInput
+                    type="datetime-local"
+                    value={selectDraft.returnDate}
+                    onChange={(event) => setSelectDraft((current) => ({ ...current, returnDate: event.target.value }))}
+                    disabled={!canEditProduct(lead)}
+                  />
+                </label>
+              </div>
+
+              {selectDraft.pickupDate && selectDraft.returnDate ? (
+                <div className="rounded-[24px] border border-[rgb(var(--accent-solid))]/18 bg-[rgb(var(--accent-solid))]/7 px-4 py-3 text-sm font-semibold text-[rgb(var(--text-primary))]">
+                  {t('leadOps.ui.rentalWindow')}: {formatDateTime(selectDraft.pickupDate)} - {formatDateTime(selectDraft.returnDate)}
+                </div>
+              ) : null}
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
+                  {t('leadFlow.form.appointmentIntent')}
+                  <AdminSelect
+                    value={selectDraft.appointmentIntent}
+                    onChange={(event) => setSelectDraft((current) => ({ ...current, appointmentIntent: event.target.value }))}
+                    disabled={!canEditProduct(lead)}
                   >
-                    {t('lead.actions.request_deposit')}
+                    <option value="FITTING">{t('leadFlow.intent.fitting')}</option>
+                    <option value="PICKUP">{t('leadFlow.intent.pickup')}</option>
+                    <option value="DELIVERY">{t('leadFlow.intent.delivery')}</option>
+                  </AdminSelect>
+                </label>
+
+                <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
+                  {t('lead.budget')}
+                  <MoneyInput
+                    value={selectDraft.quotedPrice}
+                    onValueChange={(value) => setSelectDraft((current) => ({ ...current, quotedPrice: value }))}
+                    disabled={!canEditProduct(lead)}
+                  />
+                </label>
+              </div>
+
+              <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
+                {t('lead.notes')}
+                <textarea
+                  className="field h-28 py-3"
+                  value={canEditProduct(lead) ? selectDraft.notes : lead.notes}
+                  onChange={(event) => setSelectDraft((current) => ({ ...current, notes: event.target.value }))}
+                  disabled={!canEditProduct(lead)}
+                />
+              </label>
+
+              <div className="grid gap-4 md:grid-cols-3">
+                <DetailField label={t('lead.products.total_value')} value={currency.format(selectedProductsProductValue)} helper={t('leadOps.deposit.productValueHelper')} />
+                <DetailField label={t('lead.products.total_rental')} value={currency.format(selectedProductsRentalTotal)} helper={t('leadOps.deposit.rentalValueHelper')} />
+                <DetailField
+                  label={t('leadOps.deposit.policyTitle')}
+                  value={selectedDepositOption ? t(selectedDepositOption.labelKey) : t(effectiveDepositPolicy.policyLabelKey)}
+                  helper={t(effectiveDepositPolicy.policyHelperKey)}
+                />
+              </div>
+
+              {selectProductValidationMessage ? <InlineAlert tone="warning">{selectProductValidationMessage}</InlineAlert> : null}
+
+              {canEditProduct(lead) ? (
+                <div className="flex justify-end">
+                  <AdminButton onClick={selectProduct} loading={busyAction === `select-product-${lead.id}`} disabled={Boolean(selectProductValidationMessage)}>
+                    {t('leadFlow.actions.saveProduct')}
                   </AdminButton>
-                  <AdminButton
-                    variant="secondary"
-                    className="w-full"
-                    onClick={() => setReceiveOpen(true)}
-                    disabled={!canReceiveDeposit(lead, userRole)}
-                  >
-                    {t('lead.actions.confirm_deposit')}
-                  </AdminButton>
+                </div>
+              ) : null}
+            </FormBlock>
+
+            <FormBlock title={t('lead.panels.deposit')} description={t('leadOps.deposit.rule')}>
+              <div className="flex flex-wrap gap-2">
+                {effectiveDepositPolicy.options.map((option) => {
+                  const activeOption = (receiveDraft.amount ?? effectiveDepositPolicy.defaultAmount) === option.amount;
+                  return (
+                    <button
+                      key={`lead-deposit-option-${option.key}`}
+                      type="button"
+                      onClick={() => setReceiveDraft((current) => ({ ...current, amount: option.amount }))}
+                      className={cn(
+                        'rounded-full px-4 py-2.5 text-sm font-semibold transition duration-200',
+                        activeOption
+                          ? 'bg-[rgb(var(--accent-strong))] text-[rgb(var(--button-primary-text))] shadow-[0_14px_28px_rgba(15,23,42,0.14)]'
+                          : 'border border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-3))] text-[rgb(var(--text-secondary))] hover:-translate-y-0.5 hover:border-[rgb(var(--accent-strong))]/28 hover:text-[rgb(var(--text-primary))]',
+                      )}
+                    >
+                      {t(option.labelKey)}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <InlineAlert tone="info">{t(effectiveDepositPolicy.policyHelperKey)}</InlineAlert>
+
+              <div className="grid gap-4 md:grid-cols-3">
+                <DetailField label={t('lead.deposit.deadline')} value={depositDeadlineState} helper={requestDepositHelper} />
+                <DetailField label={t('leadFlow.summary.holdStatus')} value={t(`leadFlow.hold.${lead.productHoldStatus}`)} helper={t('leadFlow.summary.holdStatus')} />
+                <DetailField
+                  label={t('payment.deposit.required')}
+                  value={currency.format(depositRequestedAmount || 0)}
+                  helper={showDraftDepositPreview ? t('leadOps.deposit.previewMetricHelper') : t('lead.deposit.required')}
+                />
+              </div>
+
+              <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
+                {t('lead.deposit.custom_amount')}
+                <MoneyInput
+                  value={receiveDraft.amount}
+                  onValueChange={(value) => setReceiveDraft((current) => ({ ...current, amount: value }))}
+                  disabled={!canRequestDeposit(lead, userRole) && !canReceiveDeposit(lead, userRole)}
+                />
+              </label>
+
+              {showDraftDepositPreview ? (
+                <InlineAlert tone="info">
+                  {draftHasRentalContext
+                    ? t('leadOps.deposit.previewActive', {
+                        policy: t(selectedProductsDepositPolicy.policyLabelKey),
+                        productValue: currency.format(selectedProductsProductValue),
+                        amount: currency.format(draftDepositPreviewAmount),
+                      })
+                    : t('leadOps.deposit.previewPending', {
+                        amount: currency.format(draftDepositPreviewAmount),
+                      })}
+                </InlineAlert>
+              ) : null}
+
+              {lead.status === 'deposit_expired' ? <InlineAlert tone="warning">{t('lead.deposit.expired')}</InlineAlert> : null}
+              {reserveFailed ? <InlineAlert tone="warning">{t('lead.deposit.reserve_failed')}</InlineAlert> : null}
+
+              {hasDepositActionButtons ? (
+                <div className="flex flex-wrap justify-end gap-2">
+                  {renderDepositActionButtons()}
+                </div>
+              ) : null}
+            </FormBlock>
+
+            <FormBlock title={t('lead.panels.appointment')} description={lead.appointmentId ? t('lead.appointment.auto_created') : t('lead.appointment.waiting_completion')}>
+              <div className="grid gap-6 lg:grid-cols-2">
+                <div className="grid gap-4">
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <DetailField label={t('leadFlow.summary.appointmentType')} value={t(`leadFlow.intent.${lead.appointmentIntent}`)} />
+                    <DetailField label={t('leadFlow.summary.appointmentStatus')} value={lead.appointmentStatus ? t(`appointment.status.${lead.appointmentStatus}`) : t('lead.empty.appointment')} />
+                    <DetailField label={t('leadFlow.summary.appointmentTime')} value={lead.appointmentTime ? formatDateTime(lead.appointmentTime) : '-'} />
+                    <DetailField label={t('lead.flow.booking')} value={lead.bookingId ?? t('lead.empty.booking')} helper={t('leadFlow.helper.bookingAnchor')} />
+                  </div>
+
+                  {appointmentIsRecoverable(lead) || appointmentFailed ? (
+                    <InlineAlert tone="warning">
+                      {appointmentFailed ? t('lead.deposit.appointment_failed') : t('lead.appointment.missing_after_deposit')}
+                    </InlineAlert>
+                  ) : null}
+                  {bookingFailed ? <InlineAlert tone="warning">{t('lead.booking.creationFailed')}</InlineAlert> : null}
+                  {bookingReservationBlocked ? <InlineAlert tone="warning">{t('lead.booking.reserveRequiredHelper')}</InlineAlert> : null}
+                </div>
+
+                <div className="grid gap-3 self-start">
+                  <Link className="button-secondary text-center" href="/admin/appointments">
+                    {t('lead.actions.open_appointment')}
+                  </Link>
+
+                  {appointmentIsRecoverable(lead) ? (
+                    <AdminButton onClick={recreateAppointment} loading={busyAction === `create-appointment-${lead.id}`}>
+                      {t('lead.actions.recreate_appointment')}
+                    </AdminButton>
+                  ) : appointmentFailed ? (
+                    <AdminButton onClick={retryAppointment} loading={busyAction === `retry-appointment-${lead.id}`}>
+                      {t('lead.actions.retry_appointment')}
+                    </AdminButton>
+                  ) : canCompleteAppointment(lead) ? (
+                    <AdminButton onClick={completeAppointment} loading={busyAction === `complete-appointment-${lead.appointmentId}`}>
+                      {t('lead.actions.complete_appointment')}
+                    </AdminButton>
+                  ) : null}
+
                   {lead.bookingId ? (
-                    <Link className="button-primary w-full text-center" href={`/admin/bookings/${lead.bookingId}`}>
+                    <Link className="button-primary text-center" href={`/admin/bookings/${lead.bookingId}`}>
                       {t('lead.actions.open_booking')}
                     </Link>
                   ) : canCreateBookingOverride(lead) ? (
-                    <AdminButton className="w-full" onClick={createBooking} loading={busyAction === `create-booking-${lead.id}`}>
-                      {t('lead.actions.create_booking')}
+                    <AdminButton onClick={retryBooking} loading={busyAction === `retry-booking-${lead.id}`}>
+                      {t('lead.actions.retry_booking')}
+                    </AdminButton>
+                  ) : lead.status === 'appointment_completed' && !hasBooking(lead) && !bookingReservationBlocked && !bookingFailed ? (
+                    <AdminButton onClick={createBooking} loading={busyAction === `create-booking-${lead.id}`}>
+                      {t('leadFlow.steps.booking')}
                     </AdminButton>
                   ) : null}
-                  <AdminButton
-                    variant="danger"
-                    className="w-full"
-                    onClick={() => setConfirmAction({ kind: 'cancel' })}
-                    disabled={lead.status === 'cancelled' || hasBooking(lead)}
-                  >
-                    {t('lead.actions.cancel_lead')}
-                  </AdminButton>
-                  <AdminButton variant="danger" className="w-full" onClick={() => setConfirmAction({ kind: 'archive' })}>
-                    {t('lead.actions.archive_lead')}
-                  </AdminButton>
                 </div>
-              </RailSection>
-
-              <RailSection title={t('lead.panels.operationalSummary')}>
-                <div className="space-y-3">
-                  <DetailField label={t('lead.next_step.call_customer')} value={t(nextStepKey(lead))} helper={t('leadOps.detail.description')} />
-                  <DetailField label={t('leadFlow.summary.holdStatus')} value={t(`leadFlow.hold.${lead.productHoldStatus}`)} />
-                  <DetailField label={t('leadFlow.summary.depositStatus')} value={t(`leadFlow.depositState.${lead.depositStatus}`)} />
-                </div>
-              </RailSection>
-            </>
-          )}
-        >
-          <SectionCard title={t('lead.detail')} description={t('leadOps.detail.description')}>
-            <div className="grid gap-6 xl:grid-cols-[minmax(0,1.06fr)_minmax(320px,0.94fr)]">
-              <div className="space-y-6">
-                <div className="rounded-[30px] border border-[rgb(var(--surface-border))]/80 bg-[rgb(var(--surface-2))]/96 p-6 shadow-[0_24px_54px_rgba(15,23,42,0.07)]">
-                  <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                    <div className="min-w-0">
-                      <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-[rgb(var(--text-muted))]">{t('lead.flow.customer')}</p>
-                      <h2 className="mt-2 text-[36px] font-semibold tracking-[-0.045em] text-[rgb(var(--text-primary))]">{lead.customerName}</h2>
-                      <p className="mt-2 text-sm leading-6 text-[rgb(var(--text-secondary))]">{lead.phone} / {lead.email}</p>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      <StatusBadge value={lead.status} tone={statusTone(lead)} />
-                      {isManualLead(lead) ? <AdminBadge tone="warning">{t('lead.manual.badge')}</AdminBadge> : null}
-                      <AdminBadge tone="neutral">{t(nextStepKey(lead))}</AdminBadge>
-                    </div>
-                  </div>
-                </div>
-
-                <FormBlock title={t('lead.customerProfile')} description={t('lead.customerProfileDesc')}>
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <DetailField label={t('lead.customer')} value={lead.customerName} helper={t('lead.customerProfileDesc')} />
-                    <DetailField label={t('lead.phone')} value={lead.phone} helper={t('lead.actions.call_customer')} />
-                    <DetailField label={t('lead.email')} value={lead.email} helper="Primary follow-up inbox" />
-                    <DetailField label={t('lead.source')} value={t(`leadOps.source.${lead.source}`)} helper="Acquisition channel" />
-                  </div>
-                </FormBlock>
-
-                <FormBlock title={t('lead.panels.productRequest')} description={isManualLead(lead) ? t('lead.manual.description') : t('leadFlow.stepDesc.product')}>
-                  <ProductCardSelect
-                    products={products}
-                    inventoryItems={inventoryItems}
-                    selectedProductId={selectDraft.productId}
-                    selectedVariantId={selectDraft.variantId}
-                    selectedColor={selectDraft.color}
-                    selectedSize={selectDraft.size}
-                    onSelectProduct={(productId) => setSelectDraft((current) => ({
-                      ...current,
-                      productId,
-                      variantId: '',
-                      inventoryItemId: '',
-                      size: '',
-                      color: '',
-                    }))}
-                    disabled={!canEditProduct(lead)}
-                  />
-
-                  <div className="grid gap-4 xl:grid-cols-2">
-                    <ColorPicker
-                      label={t('leadFlow.form.color')}
-                      helperText="Circle swatches keep color choice scannable for operators."
-                      options={colorOptions}
-                      value={selectDraft.color}
-                      onChange={(value) => setSelectDraft((current) => ({ ...current, color: value, inventoryItemId: '' }))}
-                    />
-                    <SizeSelector
-                      label={t('leadFlow.form.size')}
-                      helperText="Size pills reflect the available variant set for the selected product."
-                      options={sizeOptions}
-                      value={selectDraft.size}
-                      onChange={(value) => setSelectDraft((current) => ({ ...current, size: value, inventoryItemId: '' }))}
-                    />
-                  </div>
-
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
-                      {t('leadFlow.form.inventoryItem')}
-                      <AdminSelect value={selectDraft.inventoryItemId} onChange={(event) => setSelectDraft((current) => ({ ...current, inventoryItemId: event.target.value }))}>
-                        <option value="">{t('leadFlow.form.autoAssign')}</option>
-                        {filteredInventoryItems.map((item) => (
-                          <option key={item.id} value={item.id}>
-                            {item.serialNumber}
-                          </option>
-                        ))}
-                      </AdminSelect>
-                      <p className="text-xs leading-5 text-[rgb(var(--text-muted))]">
-                        {availableInventoryCount > 0 ? `${availableInventoryCount} item khả dụng trong kho.` : 'Chưa có item khả dụng, vẫn có thể lưu nhu cầu để xử lý sau.'}
-                      </p>
-                    </label>
-
-                    <DetailField
-                      label="Matched variant"
-                      value={selectedVariant?.name ?? t('leadFlow.form.optionalPlaceholder')}
-                      helper={matchingVariants.length > 1 ? 'Nhiều biến thể đang khớp. Chọn thêm màu hoặc size để khóa đúng variant.' : 'Variant được tự động ghép khi màu và size đủ rõ.'}
-                    />
-                  </div>
-
-                  {canEditProduct(lead) ? (
-                    <div className="flex justify-end">
-                      <AdminButton onClick={selectProduct} loading={busyAction === `select-product-${lead.id}`} disabled={Boolean(selectProductValidationMessage)}>
-                        {t('leadFlow.actions.saveProduct')}
-                      </AdminButton>
-                    </div>
-                  ) : null}
-                  {selectProductValidationMessage ? <InlineAlert tone="warning">{selectProductValidationMessage}</InlineAlert> : null}
-                </FormBlock>
-
-                <FormBlock title="Rental info" description="Capture the rental window, commercial amount, and appointment intent in one place.">
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
-                      {t('leadFlow.form.pickupDate')}
-                      <AdminInput
-                        type="datetime-local"
-                        value={selectDraft.pickupDate}
-                        onChange={(event) => setSelectDraft((current) => ({ ...current, pickupDate: event.target.value }))}
-                        disabled={!canEditProduct(lead)}
-                      />
-                      <p className="text-xs leading-5 text-[rgb(var(--text-muted))]">{t('lead.no_pickup_date.description')}</p>
-                    </label>
-                    <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
-                      {t('leadFlow.form.returnDate')}
-                      <AdminInput
-                        type="datetime-local"
-                        value={selectDraft.returnDate}
-                        onChange={(event) => setSelectDraft((current) => ({ ...current, returnDate: event.target.value }))}
-                        disabled={!canEditProduct(lead)}
-                      />
-                      <p className="text-xs leading-5 text-[rgb(var(--text-muted))]">Return timing keeps deposit request and appointment planning aligned.</p>
-                    </label>
-                    <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
-                      {t('leadFlow.form.appointmentIntent')}
-                      <AdminSelect
-                        value={selectDraft.appointmentIntent}
-                        onChange={(event) => setSelectDraft((current) => ({ ...current, appointmentIntent: event.target.value }))}
-                      >
-                        <option value="FITTING">{t('leadFlow.intent.fitting')}</option>
-                        <option value="PICKUP">{t('leadFlow.intent.pickup')}</option>
-                        <option value="DELIVERY">{t('leadFlow.intent.delivery')}</option>
-                      </AdminSelect>
-                      <p className="text-xs leading-5 text-[rgb(var(--text-muted))]">Intent drives the appointment that will be created after deposit collection.</p>
-                    </label>
-                    <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
-                      {t('lead.budget')}
-                      <MoneyInput value={selectDraft.quotedPrice} onValueChange={(value) => setSelectDraft((current) => ({ ...current, quotedPrice: value }))} disabled={!canEditProduct(lead)} />
-                      <p className="text-xs leading-5 text-[rgb(var(--text-muted))]">Stored as a number, displayed as VND for cashier-grade clarity.</p>
-                    </label>
-                  </div>
-
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <DetailField label={t('lead.salesOwner')} value={lead.ownerName} helper="Accountability for follow-up and commercial decisions." />
-                    <DetailField label={t('lead.source')} value={t(`leadOps.source.${lead.source}`)} helper="Useful when triaging manual versus client-originated leads." />
-                  </div>
-
-                  <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
-                    {t('lead.notes')}
-                    <textarea
-                      className="field h-32 py-3"
-                      value={canEditProduct(lead) ? selectDraft.notes : lead.notes}
-                      onChange={(event) => setSelectDraft((current) => ({ ...current, notes: event.target.value }))}
-                      disabled={!canEditProduct(lead)}
-                    />
-                    <p className="text-xs leading-5 text-[rgb(var(--text-muted))]">Keep the note short, commercial, and legible for the next operator.</p>
-                  </label>
-                </FormBlock>
-
-                <FormBlock title={t('lead.panels.deposit')} description={t('leadOps.deposit.rule')}>
-                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                    <DetailField label={t('leadFlow.summary.depositStatus')} value={t(`leadFlow.depositState.${lead.depositStatus}`)} helper="Commercial state of the requested deposit." />
-                    <DetailField label={t('lead.deposit.deadline')} value={depositDeadlineState} helper={requestDepositHelper} />
-                    <DetailField label={t('leadFlow.summary.holdStatus')} value={t(`leadFlow.hold.${lead.productHoldStatus}`)} helper="Inventory only becomes reserved after payment is received." />
-                    <DetailField label={t('leadFlow.summary.depositAmount')} value={currency.format(lead.depositAmountRequired || 0)} helper="Expected collection amount for this lead." />
-                    <DetailField label={t('leadFlow.summary.depositPaid')} value={currency.format(lead.depositAmountPaid || 0)} helper="Amount already collected and logged." />
-                    <DetailField label="Tổng thương mại" value={lead.quotedPrice ? currency.format(lead.quotedPrice) : t('leadOps.notQuoted')} helper="Mốc giá nội bộ trước khi tạo đơn thuê." />
-                  </div>
-                  {lead.status === 'deposit_expired' ? <InlineAlert tone="warning">{t('lead.deposit.expired')}</InlineAlert> : null}
-                  <div className="flex flex-wrap gap-2">
-                    <AdminButton onClick={requestDeposit} loading={busyAction === `request-deposit-${lead.id}`} disabled={!canRequestDeposit(lead, userRole)}>
-                      {t('lead.actions.request_deposit')}
-                    </AdminButton>
-                    <AdminButton variant="secondary" onClick={() => setReceiveOpen(true)} disabled={!canReceiveDeposit(lead, userRole)}>
-                      {t('lead.actions.confirm_deposit')}
-                    </AdminButton>
-                  </div>
-                </FormBlock>
-
-                <FormBlock title={t('lead.panels.appointment')} description={lead.appointmentId ? t('lead.appointment.auto_created') : t('lead.appointment.waiting_completion')}>
-                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                    <DetailField label={t('leadFlow.summary.appointmentType')} value={t(`leadFlow.intent.${lead.appointmentIntent}`)} helper="Intent selected during product confirmation." />
-                    <DetailField label={t('leadFlow.summary.appointmentStatus')} value={lead.appointmentStatus ? t(`appointment.status.${lead.appointmentStatus}`) : t('lead.empty.appointment')} helper="Current service readiness." />
-                    <DetailField label={t('leadFlow.summary.appointmentTime')} value={lead.appointmentTime ? formatDateTime(lead.appointmentTime) : '-'} helper="Scheduled time or the next required action." />
-                  </div>
-                  {appointmentIsRecoverable(lead) ? <InlineAlert tone="warning">{t('lead.appointment.missing_after_deposit')}</InlineAlert> : null}
-                  <div className="flex flex-wrap gap-2">
-                    <Link className="button-secondary text-center" href="/admin/appointments">
-                      {t('lead.actions.open_appointment')}
-                    </Link>
-                    {appointmentIsRecoverable(lead) ? (
-                      <AdminButton onClick={recreateAppointment} loading={busyAction === `create-appointment-${lead.id}`}>
-                        {t('lead.actions.recreate_appointment')}
-                      </AdminButton>
-                    ) : canCompleteAppointment(lead) ? (
-                      <AdminButton onClick={completeAppointment} loading={busyAction === `complete-appointment-${lead.appointmentId}`}>
-                        {t('lead.actions.complete_appointment')}
-                      </AdminButton>
-                    ) : null}
-                  </div>
-                </FormBlock>
               </div>
+            </FormBlock>
 
-              <div className="space-y-4">
-                <SectionCard title={t('leadFlow.panel.title')} description={t('leadFlow.panel.description')} className="shadow-none">
-                  <div className="space-y-4">
-                    <FlowStepCard
-                      step={t('leadFlow.steps.product')}
-                      title={productCompletion ? productDetail : t('lead.no_product.title')}
-                      detail={productStepDetail}
-                      helper={!productCompletion ? t('lead.manual.description') : t('leadFlow.stepDesc.product')}
-                      tone={productCompletion ? 'success' : canEditProduct(lead) ? 'warning' : 'neutral'}
-                      statusLabel={productCompletion ? t('lead.flow.complete') : canEditProduct(lead) ? 'CURRENT' : t('lead.flow.blocked')}
-                      state={productCompletion ? 'completed' : canEditProduct(lead) ? 'current' : 'locked'}
-                      icon={<BoxIcon />}
-                    />
-
-                    <FlowStepCard
-                      step={t('leadFlow.steps.requestDeposit')}
-                      title={depositCompletion ? t(`lead.status.${lead.status}`) : t('lead.deposit.missing')}
-                      detail={depositCompletion ? depositDeadlineLabel : t('lead.deposit.reserve_pending')}
-                      helper={requestDepositHelper}
-                      tone={lead.status === 'deposit_expired' ? 'danger' : depositCompletion ? 'success' : productCompletion ? 'warning' : 'neutral'}
-                      statusLabel={depositCompletion ? t('lead.flow.complete') : canRequestDeposit(lead, userRole) ? 'CURRENT' : t('lead.flow.blocked')}
-                      state={depositCompletion ? 'completed' : canRequestDeposit(lead, userRole) ? 'current' : 'locked'}
-                      icon={<WalletIcon />}
-                    />
-
-                    <FlowStepCard
-                      step={t('leadFlow.steps.receiveDeposit')}
-                      title={depositReceived ? t('lead.deposit.reserved') : t('lead.actions.confirm_deposit')}
-                      detail={depositReceived ? currency.format(lead.depositAmountPaid || 0) : t('lead.deposit.reserve_pending')}
-                      helper={depositReceived ? t('lead.appointment.auto_created') : t('leadFlow.helper.autoReserve')}
-                      tone={depositReceived ? 'success' : canReceiveDeposit(lead, userRole) ? 'info' : 'neutral'}
-                      statusLabel={depositReceived ? t('lead.flow.complete') : canReceiveDeposit(lead, userRole) ? 'CURRENT' : t('lead.flow.blocked')}
-                      state={depositReceived ? 'completed' : canReceiveDeposit(lead, userRole) ? 'current' : 'locked'}
-                      icon={<DotIcon />}
-                    />
-
-                    <FlowStepCard
-                      step={t('leadFlow.steps.appointment')}
-                      title={lead.appointmentId ? (lead.appointmentStatus ? t(`appointment.status.${lead.appointmentStatus}`) : t('lead.actions.open_appointment')) : t('lead.empty.appointment')}
-                      detail={lead.appointmentTime ? formatDateTime(lead.appointmentTime) : hasReceivedDeposit(lead) ? t('lead.appointment.missing_after_deposit') : t('lead.appointment.waiting_completion')}
-                      helper={lead.appointmentId ? t('leadFlow.next.completeAppointment') : t('leadFlow.helper.autoAppointment')}
-                      tone={lead.appointmentId ? 'success' : appointmentIsRecoverable(lead) ? 'warning' : 'neutral'}
-                      statusLabel={lead.appointmentId ? t('lead.flow.complete') : appointmentIsRecoverable(lead) ? 'CURRENT' : t('lead.flow.blocked')}
-                      state={lead.appointmentId ? 'completed' : appointmentIsRecoverable(lead) ? 'current' : 'locked'}
-                      icon={<CalendarIcon />}
-                    />
-
-                    <FlowStepCard
-                      step={t('leadFlow.steps.booking')}
-                      title={lead.bookingId ?? (canCreateBookingOverride(lead) ? t('lead.booking.ready') : t('lead.empty.booking'))}
-                      detail={lead.bookingStatus ? t(`booking.status.${lead.bookingStatus}`) : lead.appointmentStatus === 'completed' ? t('lead.booking.ready') : t('lead.appointment.waiting_completion')}
-                      helper={hasBooking(lead) ? t('lead.booking.locked') : t('leadFlow.stepDesc.booking')}
-                      tone={bookingCompletion ? 'success' : canCreateBookingOverride(lead) ? 'info' : 'neutral'}
-                      statusLabel={bookingCompletion ? t('lead.flow.complete') : canCreateBookingOverride(lead) ? 'CURRENT' : t('lead.flow.blocked')}
-                      state={bookingCompletion ? 'completed' : canCreateBookingOverride(lead) ? 'current' : 'locked'}
-                      icon={<CheckIcon />}
-                      isLast
-                      action={bookingCompletion ? (
-                        <Link className="button-primary text-center" href={`/admin/bookings/${lead.bookingId}`}>
-                          {t('lead.actions.open_booking')}
-                        </Link>
-                      ) : canCreateBookingOverride(lead) ? (
-                        <AdminButton onClick={createBooking} loading={busyAction === `create-booking-${lead.id}`}>
-                          {t('lead.actions.create_booking')}
-                        </AdminButton>
-                      ) : undefined}
-                    />
-                  </div>
-                </SectionCard>
-
-                <SectionCard title={t('lead.panels.booking')} description={hasBooking(lead) ? t('lead.booking.locked') : t('lead.appointment.waiting_completion')} className="shadow-none">
-                  <div className="grid gap-3">
-                    <DetailField label={t('lead.flow.booking')} value={lead.bookingId ?? t('lead.empty.booking')} helper="Mã đơn thuê là điểm neo để chuyển sang thanh toán, bàn giao và nhận trả." />
-                    <DetailField label={t('common.status')} value={lead.bookingStatus ? t(`booking.status.${lead.bookingStatus}`) : '-'} helper="Trạng thái vòng đời sau khi lead đã chuyển thành đơn thuê." />
-                  </div>
-                </SectionCard>
-
-                <SectionCard title={t('lead.notes')} description={lead.notes ? 'Operator note snapshot' : t('leadOps.detail.noNotes')} className="shadow-none">
-                  <div className="rounded-[24px] border border-[rgb(var(--surface-border))]/80 bg-[rgb(var(--surface-3))]/72 p-5 text-sm leading-6 text-[rgb(var(--text-secondary))]">
-                    {lead.notes || t('leadOps.detail.noNotes')}
-                  </div>
-                </SectionCard>
+            <SectionCard title={t('lead.notes')} description={lead.notes ? t('leadOps.ui.noteSnapshot') : t('leadOps.detail.noNotes')}>
+              <div className="rounded-[24px] border border-[rgb(var(--surface-border))]/70 bg-[rgb(var(--surface-3))]/55 p-4 text-sm leading-6 text-[rgb(var(--text-secondary))]">
+                {lead.notes || t('leadOps.detail.noNotes')}
               </div>
-            </div>
-          </SectionCard>
+            </SectionCard>
 
-          <SectionCard title={t('lead.panels.activity')} description={t('leadOps.detail.timelineDesc')}>
-            <TimelineList
-              items={timelineItems.length ? timelineItems : [{ time: formatDateTime(lead.createdAt), title: t('leadOps.timeline.created'), detail: lead.source }]}
-            />
-          </SectionCard>
-        </WorkspaceLayout>
+            <SectionCard title={t('lead.panels.activity')} description={t('leadOps.detail.timelineDesc')}>
+              <TimelineList
+                items={
+                  timelineItems.length
+                    ? timelineItems
+                    : [
+                        {
+                          time: formatDateTime(lead.createdAt),
+                          title: t('leadOps.timeline.created'),
+                          detail: translateLeadSource(lead.source, t),
+                        },
+                      ]
+                }
+              />
+            </SectionCard>
+          </main>
+
+          <aside className="grid gap-4 self-start xl:sticky xl:top-6">
+            <SectionCard title={t('payment.summary.title')} description={t('leadOps.detail.description')} className="shadow-none">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <MetricTile label={t('lead.products.total_value')} value={currency.format(productValue)} helper={productDetail} />
+                <MetricTile label={t('lead.products.total_rental')} value={currency.format(rentalValue)} helper={t('leadOps.deposit.rentalValueHelper')} tone="accent" />
+                <MetricTile label={t('payment.deposit.required')} value={currency.format(depositRequestedAmount || 0)} helper={t('lead.deposit.required')} tone="warning" />
+                <MetricTile label={t('payment.deposit.paid')} value={currency.format(depositPaidAmount || 0)} helper={t('lead.deposit.paid')} tone={depositReceived ? 'success' : 'neutral'} />
+                <MetricTile label={t('lead.deposit.remaining')} value={currency.format(depositRemainingForSelectedRate || 0)} helper={selectedDepositOption ? t(selectedDepositOption.helperKey) : t('leadOps.ui.depositRequiredHelper')} tone={depositRemainingForSelectedRate > 0 ? 'warning' : 'success'} />
+                <MetricTile label={t('lead.deposit.remaining')} value={currency.format(depositRemainingForFull || 0)} helper={t('leadOps.deposit.productValueHelper')} tone={depositRemainingForFull > 0 ? 'neutral' : 'success'} />
+              </div>
+            </SectionCard>
+
+            <SectionCard title={t('lead.title')} description={t('lead.subtitle')} className="shadow-none">
+              <div className="grid gap-3">
+                <DetailField label={t('lead.phone')} value={lead.phone} />
+                <DetailField label={t('lead.email')} value={lead.email} />
+                <DetailField label={t('lead.source')} value={sourceLabel} />
+                <DetailField label={t('leadOps.ui.owner')} value={lead.ownerName} helper={t('leadOps.ui.ownerHelper')} />
+                <DetailField label={t('leadOps.ui.rentalWindow')} value={lead.pickupDate && lead.returnDate ? `${formatDate(lead.pickupDate)} - ${formatDate(lead.returnDate)}` : '-'} />
+                <DetailField label={t('leadFlow.summary.appointmentType')} value={t(`leadFlow.intent.${lead.appointmentIntent}`)} />
+              </div>
+            </SectionCard>
+
+            <SectionCard title={t('leadOps.ui.dangerZone')} description={t('leadOps.detail.description')} className="shadow-none">
+              <div className="grid gap-3">
+                {riskAlerts.length ? riskAlerts.map((message, index) => (
+                  <InlineAlert key={`lead-risk-${index}`} tone="warning">{message}</InlineAlert>
+                )) : (
+                  <div className="rounded-[24px] border border-[rgb(var(--success))]/18 bg-[rgb(var(--success))]/7 px-4 py-4 text-sm text-[rgb(var(--text-secondary))]">
+                    {t('lead.booking.locked')}
+                  </div>
+                )}
+              </div>
+            </SectionCard>
+
+            <SectionCard title={t('leadOps.ui.secondaryActions')} description={nextStepLabel} className="shadow-none">
+              <div className="grid gap-2">
+                <AdminButton variant="secondary" className="w-full" onClick={callCustomer} loading={busyAction === `contact-${lead.id}`}>
+                  {t('lead.actions.call_customer')}
+                </AdminButton>
+                <AdminButton variant="secondary" className="w-full" onClick={sendZalo} loading={busyAction === `zalo-${lead.id}`}>
+                  {t('lead.actions.send_zalo')}
+                </AdminButton>
+                <AdminButton variant="secondary" className="w-full" onClick={() => setAssignOpen(true)}>
+                  {t('lead.actions.assign_staff')}
+                </AdminButton>
+                <AdminButton variant="secondary" className="w-full" onClick={() => setEditOpen(true)}>
+                  {t('lead.actions.edit_lead')}
+                </AdminButton>
+                <AdminButton
+                  variant="danger"
+                  className="w-full"
+                  onClick={() => setConfirmAction({ kind: 'cancel' })}
+                  disabled={lead.status === 'cancelled' || hasBooking(lead)}
+                >
+                  {t('lead.actions.cancel_lead')}
+                </AdminButton>
+                <AdminButton variant="danger" className="w-full" onClick={() => setConfirmAction({ kind: 'archive' })}>
+                  {t('lead.actions.archive_lead')}
+                </AdminButton>
+              </div>
+            </SectionCard>
+          </aside>
+        </div>
       </div>
 
       <AdminModal
@@ -1392,7 +2433,7 @@ export default function LeadDetailPage() {
             <AdminButton
               onClick={receiveDeposit}
               loading={busyAction === `receive-deposit-${lead.id}`}
-              disabled={!Number(receiveDraft.amount)}
+              disabled={receiveDraft.amount == null || Number(receiveDraft.amount) < 0}
             >
               {t('lead.actions.confirm_deposit')}
             </AdminButton>
@@ -1400,11 +2441,37 @@ export default function LeadDetailPage() {
         )}
       >
         <div className="grid gap-5">
-          <FormBlock title={t('lead.panels.deposit')} description="Record the exact cashier intake in VND and keep the audit trail legible.">
+          <FormBlock title={t('lead.panels.deposit')} description={t('leadOps.ui.cashierIntake')}>
+            <div className="flex flex-wrap gap-2">
+              {currentLeadDepositPolicy.options.map((option) => {
+                const activeOption = (receiveDraft.amount ?? currentLeadDepositPolicy.defaultAmount) === option.amount;
+                return (
+                  <button
+                    key={`receive-deposit-option-${option.key}`}
+                    type="button"
+                    onClick={() => {
+                      setReceiveDraft((current) => ({
+                        ...current,
+                        amount: Math.max(option.amount - depositPaidAmount, 0),
+                      }));
+                    }}
+                    className={cn(
+                      'rounded-full px-4 py-2.5 text-sm font-semibold transition duration-200',
+                      activeOption
+                        ? 'bg-[rgb(var(--accent-strong))] text-[rgb(var(--button-primary-text))] shadow-[0_14px_28px_rgba(15,23,42,0.14)]'
+                        : 'border border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-3))] text-[rgb(var(--text-secondary))] hover:-translate-y-0.5 hover:border-[rgb(var(--accent-strong))]/28 hover:text-[rgb(var(--text-primary))]',
+                    )}
+                  >
+                    {t(option.labelKey)}
+                  </button>
+                );
+              })}
+            </div>
+            <InlineAlert tone="info">{t(currentLeadDepositPolicy.policyHelperKey)}</InlineAlert>
             <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
               {t('leadFlow.form.depositAmount')}
               <MoneyInput value={receiveDraft.amount} onValueChange={(value) => setReceiveDraft((current) => ({ ...current, amount: value }))} />
-              <p className="text-xs leading-5 text-[rgb(var(--text-muted))]">This value is stored as a number and formatted only at the UI layer.</p>
+              <p className="text-xs leading-5 text-[rgb(var(--text-muted))]">{t('leadOps.deposit.documentNote')}</p>
             </label>
             <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
               {t('leadFlow.form.paymentMethod')}
@@ -1419,7 +2486,7 @@ export default function LeadDetailPage() {
             <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
               {t('leadFlow.form.paymentNote')}
               <AdminInput value={receiveDraft.description} onChange={(event) => setReceiveDraft((current) => ({ ...current, description: event.target.value }))} />
-              <p className="text-xs leading-5 text-[rgb(var(--text-muted))]">Use a concise note: channel, cashier, or transaction reference.</p>
+              <p className="text-xs leading-5 text-[rgb(var(--text-muted))]">{t('leadOps.deposit.noteHelper')}</p>
             </label>
           </FormBlock>
         </div>
@@ -1441,16 +2508,16 @@ export default function LeadDetailPage() {
         )}
       >
         <div className="grid gap-5">
-          <FormBlock title="Commercial edit" description="Adjust the quoted amount and operator notes without changing workflow logic.">
+          <FormBlock title={t('leadOps.ui.commercialEdit')} description={t('leadOps.ui.commercialEditDescription')}>
             <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
               {t('lead.budget')}
               <MoneyInput value={editDraft.quotedPrice} onValueChange={(value) => setEditDraft((current) => ({ ...current, quotedPrice: value }))} />
-              <p className="text-xs leading-5 text-[rgb(var(--text-muted))]">Displayed in VND, stored as a plain numeric amount.</p>
+              <p className="text-xs leading-5 text-[rgb(var(--text-muted))]">{t('leadOps.ui.commercialPriceHelper')}</p>
             </label>
             <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
               {t('lead.notes')}
               <textarea className="field h-32 py-3" value={editDraft.notes} onChange={(event) => setEditDraft((current) => ({ ...current, notes: event.target.value }))} />
-              <p className="text-xs leading-5 text-[rgb(var(--text-muted))]">Keep the note focused on what the next operator needs to know.</p>
+              <p className="text-xs leading-5 text-[rgb(var(--text-muted))]">{t('leadOps.ui.commercialNoteHelper')}</p>
             </label>
           </FormBlock>
         </div>
@@ -1503,3 +2570,4 @@ export default function LeadDetailPage() {
     </>
   );
 }
+

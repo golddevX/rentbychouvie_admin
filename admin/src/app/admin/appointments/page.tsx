@@ -1,17 +1,22 @@
 'use client';
 
 import Link from 'next/link';
+import { Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { appointmentsApi, inventoryApi, usersApi } from '@/lib/api';
 import { appointments as demoAppointments, inventory as demoInventory, staff as demoStaff, type Tone } from '@/lib/admin/demo-data';
 import { useI18n } from '@/hooks/useI18n';
+import { useAdminListParams } from '@/hooks/useAdminListParams';
 import {
+  ActionMenu,
   ControlSurface,
   DataTable,
   FeedbackPopup,
   InlineAlert,
   KeyValueList,
   PageHeader,
+  PaginationControls,
   RailSection,
   SectionCard,
   StatusBadge,
@@ -108,13 +113,13 @@ function normalizeStatus(row: any): AppointmentStatus {
   return 'scheduled';
 }
 
-function appointmentFromApi(row: any): AppointmentRow {
+function appointmentFromApi(row: any, labels?: { unknownCustomer: string; unassigned: string }): AppointmentRow {
   const start = row.startTime ?? row.scheduledAt ?? row.date;
   const end = row.endTime ?? (start ? new Date(new Date(start).getTime() + Number(row.durationMinutes ?? 60) * 60000).toISOString() : new Date().toISOString());
   return {
     id: row.id,
     customerId: row.customer?.id ?? row.customerId,
-    customerName: row.customer?.name ?? row.customer ?? 'Walk-in customer',
+    customerName: row.customer?.name ?? row.customer ?? labels?.unknownCustomer ?? '-',
     customerEmail: row.customer?.email ?? row.email,
     customerPhone: row.customer?.phone ?? row.phone,
     type: normalizeType(row.type),
@@ -125,7 +130,7 @@ function appointmentFromApi(row: any): AppointmentRow {
     room: row.room,
     notes: row.notes,
     staffId: row.staff?.id ?? row.staffId,
-    staffName: row.staff?.fullName ?? row.staff ?? 'Unassigned',
+    staffName: row.staff?.fullName ?? row.staff ?? labels?.unassigned ?? '-',
     resourceItemId: row.resourceItem?.id ?? row.resourceItemId,
     resourceItemCode: row.resourceItem?.serialNumber ?? row.resourceItem?.qrCode,
     leadId: row.leadId,
@@ -186,7 +191,7 @@ function statusToApi(status: AppointmentStatus) {
   return status.toUpperCase();
 }
 
-function newAppointmentDraft(startDate = new Date(Date.now() + 3600000)) {
+function newAppointmentDraft(startDate = new Date(Date.now() + 3600000), room = '') {
   const endDate = new Date(startDate.getTime() + 60 * 60000);
   return {
     name: '',
@@ -195,16 +200,27 @@ function newAppointmentDraft(startDate = new Date(Date.now() + 3600000)) {
     type: 'CONSULTATION',
     startTime: toIsoLocal(startDate),
     endTime: toIsoLocal(endDate),
-    room: 'Consultation A',
+    room,
     staffId: '',
     resourceItemId: '',
     notes: '',
   };
 }
 
-export default function AppointmentsPage() {
+function AppointmentsPageContent() {
   const { t } = useI18n();
-  const [rows, setRows] = useState<AppointmentRow[]>(demoAppointments.map(appointmentFromApi));
+  const searchParams = useSearchParams();
+  const { params, updateParams, setPage, setLimit } = useAdminListParams({
+    page: 1,
+    limit: 20,
+    sortBy: 'startTime',
+    sortOrder: 'asc',
+  });
+  const appointmentLabels = useMemo(() => ({
+    unknownCustomer: t('leadOps.fallback.unknownCustomer'),
+    unassigned: t('appointmentOps.unassigned'),
+  }), [t]);
+  const [rows, setRows] = useState<AppointmentRow[]>(demoAppointments.map((row) => appointmentFromApi(row, appointmentLabels)));
   const [staff, setStaff] = useState<StaffOption[]>(demoStaff.map((item) => ({ id: item.id, fullName: item.name })));
   const [items, setItems] = useState<ItemOption[]>(demoInventory.map((item) => ({ id: item.id, serialNumber: item.itemCode, status: item.status })));
   const [activeId, setActiveId] = useState(demoAppointments[0]?.id ?? '');
@@ -213,17 +229,20 @@ export default function AppointmentsPage() {
   const [viewMode, setViewMode] = useState<ViewMode>('calendar');
   const [rangeMode, setRangeMode] = useState<RangeMode>('day');
   const [anchorDate, setAnchorDate] = useState(() => new Date());
-  const [query, setQuery] = useState('');
-  const [typeFilter, setTypeFilter] = useState<'all' | AppointmentType>('all');
-  const [statusFilter, setStatusFilter] = useState<'all' | AppointmentStatus>('all');
-  const [staffFilter, setStaffFilter] = useState('all');
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
-  const [form, setForm] = useState(newAppointmentDraft());
-  const [editForm, setEditForm] = useState(newAppointmentDraft());
+  const [form, setForm] = useState(newAppointmentDraft(new Date(Date.now() + 3600000), t('appointmentOps.form.defaultRoom')));
+  const [editForm, setEditForm] = useState(newAppointmentDraft(new Date(Date.now() + 3600000), t('appointmentOps.form.defaultRoom')));
   const [availability, setAvailability] = useState<{ available: boolean; blockedBy: any[] } | null>(null);
   const [feedback, setFeedback] = useState<{ tone: Tone; message: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [meta, setMeta] = useState({ page: 1, limit: 20, total: 0, totalPages: 0, hasNextPage: false, hasPreviousPage: false });
+  const query = params.search;
+  const typeFilter = (searchParams.get('type') ?? 'all') as 'all' | AppointmentType;
+  const statusFilter = (searchParams.get('status') ?? 'all') as 'all' | AppointmentStatus;
+  const staffFilter = searchParams.get('staffId') ?? 'all';
+  const windowStart = useMemo(() => startOfDay(anchorDate), [anchorDate]);
+  const windowEnd = useMemo(() => addDays(windowStart, rangeMode === 'day' ? 1 : 7), [rangeMode, windowStart]);
 
   const active = useMemo(() => rows.find((row) => row.id === activeId) ?? rows[0], [activeId, rows]);
 
@@ -232,19 +251,34 @@ export default function AppointmentsPage() {
     setError(null);
     try {
       const [apRes, usersRes, invRes] = await Promise.allSettled([
-        appointmentsApi.getAll({ includeArchived: false }),
-        usersApi.getAll(),
-        inventoryApi.getItems('AVAILABLE'),
+        appointmentsApi.list({
+          includeArchived: false,
+          page: params.page,
+          limit: params.limit,
+          search: query || undefined,
+          type: typeFilter === 'all' ? undefined : typeFilter.toUpperCase(),
+          status: statusFilter === 'all' ? undefined : statusToApi(statusFilter),
+          staffId: staffFilter === 'all' ? undefined : staffFilter,
+          sortBy: 'startTime',
+          sortOrder: 'asc',
+          dateFrom: windowStart.toISOString(),
+          dateTo: windowEnd.toISOString(),
+        }),
+        usersApi.list({ limit: 100, sortBy: 'createdAt', sortOrder: 'desc' }),
+        inventoryApi.listItems({ status: 'AVAILABLE', limit: 100, sortBy: 'createdAt', sortOrder: 'desc' }),
       ]);
-      const appointmentRows = apRes.status === 'fulfilled' ? (apRes.value.data ?? []).map(appointmentFromApi) : [];
-      const nextRows = appointmentRows.length ? appointmentRows : demoAppointments.map(appointmentFromApi);
+      const appointmentRows = apRes.status === 'fulfilled' ? (apRes.value.data?.data ?? []).map((row: any) => appointmentFromApi(row, appointmentLabels)) : [];
+      const nextRows = appointmentRows.length ? appointmentRows : demoAppointments.map((row) => appointmentFromApi(row, appointmentLabels));
       setRows(nextRows);
+      if (apRes.status === 'fulfilled') {
+        setMeta(apRes.value.data?.meta ?? { page: params.page, limit: params.limit, total: nextRows.length, totalPages: nextRows.length ? 1 : 0, hasNextPage: false, hasPreviousPage: false });
+      }
       setActiveId((current) => nextRows.find((row: AppointmentRow) => row.id === current)?.id ?? nextRows[0]?.id ?? '');
       if (usersRes.status === 'fulfilled') {
-        setStaff((usersRes.value.data ?? []).map((user: any) => ({ id: user.id, fullName: user.fullName })));
+        setStaff((usersRes.value.data?.data ?? []).map((user: any) => ({ id: user.id, fullName: user.fullName })));
       }
       if (invRes.status === 'fulfilled') {
-        setItems((invRes.value.data ?? []).map((item: any) => ({ id: item.id, serialNumber: item.serialNumber, status: item.status })));
+        setItems((invRes.value.data?.data ?? []).map((item: any) => ({ id: item.id, serialNumber: item.serialNumber, status: item.status })));
       }
       if (apRes.status === 'rejected') setError(t('appointmentOps.errors.loadFallback'));
     } finally {
@@ -254,8 +288,7 @@ export default function AppointmentsPage() {
 
   useEffect(() => {
     void loadData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [params.limit, params.page, params.search, rangeMode, staffFilter, statusFilter, typeFilter, windowEnd, windowStart]);
 
   useEffect(() => {
     const start = form.startTime;
@@ -296,23 +329,10 @@ export default function AppointmentsPage() {
     });
   }, [active]);
 
-  const windowStart = useMemo(() => startOfDay(anchorDate), [anchorDate]);
-  const windowEnd = useMemo(() => addDays(windowStart, rangeMode === 'day' ? 1 : 7), [rangeMode, windowStart]);
-
   const visibleRows = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
     return rows
-      .filter((row) => new Date(row.startTime) >= windowStart && new Date(row.startTime) < windowEnd)
-      .filter((row) => typeFilter === 'all' || row.type === typeFilter)
-      .filter((row) => statusFilter === 'all' || row.status === statusFilter)
-      .filter((row) => staffFilter === 'all' || row.staffId === staffFilter || (staffFilter === 'unassigned' && !row.staffId))
-      .filter((row) => {
-        if (!normalizedQuery) return true;
-        return [row.customerName, row.customerPhone, row.customerEmail, row.staffName, row.room, row.notes, row.id, row.leadId, row.bookingId]
-          .some((value) => String(value ?? '').toLowerCase().includes(normalizedQuery));
-      })
       .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
-  }, [query, rangeMode, rows, staffFilter, statusFilter, typeFilter, windowEnd, windowStart]);
+  }, [rows]);
 
   const todayRows = useMemo(() => rows.filter(isToday).sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime()), [rows]);
   const upcomingRows = useMemo(() => rows.filter(isUpcoming).sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime()), [rows]);
@@ -359,7 +379,7 @@ export default function AppointmentsPage() {
           notes: form.notes,
         });
         setCreateOpen(false);
-        setForm(newAppointmentDraft());
+        setForm(newAppointmentDraft(new Date(Date.now() + 3600000), t('appointmentOps.form.defaultRoom')));
       },
       t('appointmentOps.success.created'),
     );
@@ -415,7 +435,7 @@ export default function AppointmentsPage() {
   };
 
   const openCreateAt = (date: Date) => {
-    setForm(newAppointmentDraft(date));
+    setForm(newAppointmentDraft(date, t('appointmentOps.form.defaultRoom')));
     setCreateOpen(true);
   };
 
@@ -436,6 +456,17 @@ export default function AppointmentsPage() {
     active.status === 'completed' ? { time: formatDateTime(active.endTime), title: t('appointmentOps.timeline.completed'), detail: t(nextStepKey(active)), tone: 'success' as Tone } : null,
     active.status === 'cancelled' ? { time: formatDateTime(active.endTime), title: t('appointmentOps.timeline.cancelled'), detail: active.notes ?? '-', tone: 'danger' as Tone } : null,
   ].filter(Boolean) as Array<{ time: string; title: string; detail: string; tone?: Tone }> : [];
+  const primaryActionLabel = active
+    ? active.status === 'scheduled'
+      ? t('appointmentOps.actions.checkIn')
+      : active.status === 'checked_in'
+        ? t('appointmentOps.actions.complete')
+        : active.bookingId
+          ? t('appointmentOps.actions.openBooking')
+          : active.leadId
+            ? t('appointmentOps.actions.openLead')
+            : t('appointmentOps.actions.reschedule')
+    : '';
 
   return (
     <>
@@ -476,17 +507,17 @@ export default function AppointmentsPage() {
             className="md:col-span-2"
             placeholder={t('appointmentOps.controls.searchPlaceholder')}
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => updateParams({ search: event.target.value }, { resetPage: true })}
           />
-          <AdminSelect value={typeFilter} onChange={(event) => setTypeFilter(event.target.value as 'all' | AppointmentType)}>
+          <AdminSelect value={typeFilter} onChange={(event) => updateParams({ type: event.target.value }, { resetPage: true })}>
             <option value="all">{t('appointmentOps.controls.allTypes')}</option>
             {TYPE_OPTIONS.map((type) => <option key={type} value={type}>{appointmentTypeLabel(type, t)}</option>)}
           </AdminSelect>
-          <AdminSelect value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as 'all' | AppointmentStatus)}>
+          <AdminSelect value={statusFilter} onChange={(event) => updateParams({ status: event.target.value }, { resetPage: true })}>
             <option value="all">{t('appointmentOps.controls.allStatuses')}</option>
             {STATUS_OPTIONS.map((status) => <option key={status} value={status}>{appointmentStatusLabel(status, t)}</option>)}
           </AdminSelect>
-          <AdminSelect value={staffFilter} onChange={(event) => setStaffFilter(event.target.value)}>
+          <AdminSelect value={staffFilter} onChange={(event) => updateParams({ staffId: event.target.value }, { resetPage: true })}>
             <option value="all">{t('appointmentOps.controls.allStaff')}</option>
             <option value="unassigned">{t('appointmentOps.unassigned')}</option>
             {staff.map((user) => <option key={user.id} value={user.id}>{user.fullName}</option>)}
@@ -519,23 +550,43 @@ export default function AppointmentsPage() {
               {active ? (
                 <>
                   <RailSection title={t('appointmentOps.rail.actions')}>
-                    <AdminButton className="w-full" onClick={() => updateStatus(active, 'checked_in')} disabled={active.status !== 'scheduled'} loading={busyAction === `status-${active.id}`}>
-                      {t('appointmentOps.actions.checkIn')}
-                    </AdminButton>
-                    <AdminButton variant="secondary" className="w-full" onClick={() => updateStatus(active, 'completed')} disabled={active.status === 'completed' || active.status === 'cancelled'} loading={busyAction === `status-${active.id}`}>
-                      {t('appointmentOps.actions.complete')}
-                    </AdminButton>
-                    <AdminButton variant="secondary" className="w-full" onClick={() => setEditOpen(true)}>{t('appointmentOps.actions.reschedule')}</AdminButton>
-                    <AdminButton variant="secondary" className="w-full" onClick={() => updateStatus(active, 'cancelled')} disabled={active.status === 'cancelled'} loading={busyAction === `status-${active.id}`}>
-                      {t('appointmentOps.actions.cancel')}
-                    </AdminButton>
-                    {active.leadId ? <Link className="button-secondary w-full text-center" href={`/admin/leads/${active.leadId}`}>{t('appointmentOps.actions.openLead')}</Link> : null}
-                    {active.bookingId ? <Link className="button-secondary w-full text-center" href={`/admin/bookings/${active.bookingId}`}>{t('appointmentOps.actions.openBooking')}</Link> : null}
-                    {!active.leadId ? (
-                      <Link className="button-primary w-full text-center" href="/admin/bookings/new">
-                        {t('appointmentOps.actions.convert')}
+                    {active.status === 'scheduled' ? (
+                      <AdminButton className="w-full" onClick={() => updateStatus(active, 'checked_in')} disabled={active.status !== 'scheduled'} loading={busyAction === `status-${active.id}`}>
+                        {primaryActionLabel}
+                      </AdminButton>
+                    ) : active.status === 'checked_in' ? (
+                      <AdminButton className="w-full" onClick={() => updateStatus(active, 'completed')} loading={busyAction === `status-${active.id}`}>
+                        {primaryActionLabel}
+                      </AdminButton>
+                    ) : active.bookingId ? (
+                      <Link className="button-primary w-full text-center" href={`/admin/bookings/${active.bookingId}`}>
+                        {primaryActionLabel}
                       </Link>
-                    ) : null}
+                    ) : active.leadId ? (
+                      <Link className="button-primary w-full text-center" href={`/admin/leads/${active.leadId}`}>
+                        {primaryActionLabel}
+                      </Link>
+                    ) : (
+                      <AdminButton className="w-full" onClick={() => setEditOpen(true)}>
+                        {primaryActionLabel}
+                      </AdminButton>
+                    )}
+                    <ActionMenu
+                      className="w-full"
+                      label={t('common.moreActions')}
+                      items={[
+                        { label: t('appointmentOps.actions.reschedule'), onSelect: () => setEditOpen(true) },
+                        {
+                          label: t('appointmentOps.actions.cancel'),
+                          disabled: active.status === 'cancelled',
+                          tone: 'danger',
+                          onSelect: () => { void updateStatus(active, 'cancelled'); },
+                        },
+                        ...(active.leadId ? [{ label: t('appointmentOps.actions.openLead'), href: `/admin/leads/${active.leadId}` }] : []),
+                        ...(active.bookingId ? [{ label: t('appointmentOps.actions.openBooking'), href: `/admin/bookings/${active.bookingId}` }] : []),
+                        ...(!active.leadId ? [{ label: t('appointmentOps.actions.convert'), href: active.customerId ? `/admin/bookings/new?customerId=${active.customerId}` : '/admin/bookings/new' }] : []),
+                      ]}
+                    />
                   </RailSection>
                   <RailSection title={t('appointmentOps.rail.detail')}>
                     <KeyValueList
@@ -580,6 +631,10 @@ export default function AppointmentsPage() {
               <CalendarView groupedByDay={groupedByDay} activeId={activeId} onSelect={setActiveId} onCreate={openCreateAt} />
             ) : (
               <DataTable
+                tableClassName="min-w-[1120px]"
+                rowKeys={visibleRows.map((row) => row.id)}
+                selectedRowKey={activeId}
+                onRowClick={(rowIndex) => setActiveId(visibleRows[rowIndex]?.id ?? '')}
                 columns={[
                   t('appointmentOps.columns.customer'),
                   t('appointmentOps.columns.type'),
@@ -591,24 +646,79 @@ export default function AppointmentsPage() {
                   t('common.actions'),
                 ]}
                 empty={t('appointmentOps.empty')}
+                emptyDescription={t('appointmentOps.emptyDetail')}
                 rows={visibleRows.map((row) => [
-                  <button key={row.id} type="button" className="text-left" onClick={() => setActiveId(row.id)}>
+                  <div key={row.id} className="grid gap-1">
                     <span className="block font-semibold text-[rgb(var(--text-primary))]">{row.customerName}</span>
-                    <span className="block text-xs text-[rgb(var(--text-muted))]">{row.customerPhone ?? row.customerEmail ?? row.id}</span>
-                  </button>,
+                    <span className="block text-xs text-[rgb(var(--text-secondary))]">{row.customerPhone ?? row.customerEmail ?? row.id}</span>
+                    <span className="block text-xs text-[rgb(var(--text-muted))]">{row.room ?? t('appointmentOps.form.defaultRoom')}</span>
+                  </div>,
                   <StatusBadge key={`${row.id}-type`} value={row.type} tone={typeTone(row.type)} />,
-                  <span key={`${row.id}-time`} className={cn(isUpcoming(row) && 'font-semibold text-[rgb(var(--warning))]')}>{formatDate(row.startTime)} / {formatTime(row.startTime)}</span>,
+                  <div key={`${row.id}-time`} className="grid gap-1">
+                    <span className={cn('font-semibold', isUpcoming(row) && 'text-[rgb(var(--warning))]')}>{formatDate(row.startTime)} / {formatTime(row.startTime)}</span>
+                    <span className="text-xs text-[rgb(var(--text-muted))]">{formatTime(row.endTime)}</span>
+                  </div>,
                   <StatusBadge key={`${row.id}-status`} value={row.status} tone={statusTone(row.status)} />,
-                  row.staffName,
-                  sourceLabel(row, t),
+                  <div key={`${row.id}-staff`} className="grid gap-1">
+                    <span className="font-medium text-[rgb(var(--text-primary))]">{row.staffName}</span>
+                    <span className="text-xs text-[rgb(var(--text-muted))]">{row.resourceItemCode ?? '-'}</span>
+                  </div>,
+                  <div key={`${row.id}-source`} className="grid gap-1">
+                    <span className="font-medium text-[rgb(var(--text-primary))]">{sourceLabel(row, t)}</span>
+                    <span className="text-xs text-[rgb(var(--text-muted))]">{row.notes || '-'}</span>
+                  </div>,
                   <span key={`${row.id}-next`} className="font-semibold text-[rgb(var(--text-primary))]">{t(nextStepKey(row))}</span>,
-                  <div key={`${row.id}-actions`} className="flex flex-wrap gap-2">
-                    <AdminButton size="sm" variant="secondary" onClick={() => updateStatus(row, 'checked_in')} disabled={row.status !== 'scheduled'}>{t('appointmentOps.short.checkIn')}</AdminButton>
-                    <AdminButton size="sm" variant="secondary" onClick={() => { setActiveId(row.id); setEditOpen(true); }}>{t('common.edit')}</AdminButton>
+                  <div key={`${row.id}-actions`} className="flex flex-wrap items-center justify-end gap-2">
+                    {row.status === 'scheduled' ? (
+                      <AdminButton size="sm" onClick={() => void updateStatus(row, 'checked_in')} loading={busyAction === `status-${row.id}`}>
+                        {t('appointmentOps.short.checkIn')}
+                      </AdminButton>
+                    ) : row.status === 'checked_in' ? (
+                      <AdminButton size="sm" onClick={() => void updateStatus(row, 'completed')} loading={busyAction === `status-${row.id}`}>
+                        {t('appointmentOps.actions.complete')}
+                      </AdminButton>
+                    ) : row.bookingId ? (
+                      <Link className="button-primary min-h-9 px-3 text-sm" href={`/admin/bookings/${row.bookingId}`}>
+                        {t('appointmentOps.actions.openBooking')}
+                      </Link>
+                    ) : row.leadId ? (
+                      <Link className="button-primary min-h-9 px-3 text-sm" href={`/admin/leads/${row.leadId}`}>
+                        {t('appointmentOps.actions.openLead')}
+                      </Link>
+                    ) : (
+                      <AdminButton size="sm" variant="secondary" onClick={() => { setActiveId(row.id); setEditOpen(true); }}>
+                        {t('appointmentOps.actions.reschedule')}
+                      </AdminButton>
+                    )}
+                    <ActionMenu
+                      label={t('common.moreActions')}
+                      items={[
+                        { label: t('common.edit'), onSelect: () => { setActiveId(row.id); setEditOpen(true); } },
+                        {
+                          label: t('appointmentOps.actions.cancel'),
+                          disabled: row.status === 'cancelled',
+                          tone: 'danger',
+                          onSelect: () => { void updateStatus(row, 'cancelled'); },
+                        },
+                        ...(row.leadId ? [{ label: t('appointmentOps.actions.openLead'), href: `/admin/leads/${row.leadId}` }] : []),
+                        ...(row.bookingId ? [{ label: t('appointmentOps.actions.openBooking'), href: `/admin/bookings/${row.bookingId}` }] : []),
+                        ...(!row.leadId ? [{ label: t('appointmentOps.actions.convert'), href: row.customerId ? `/admin/bookings/new?customerId=${row.customerId}` : '/admin/bookings/new' }] : []),
+                      ]}
+                    />
                   </div>,
                 ])}
               />
             )}
+            <PaginationControls
+              page={meta.page}
+              limit={meta.limit}
+              total={meta.total}
+              totalPages={meta.totalPages}
+              hasNextPage={meta.hasNextPage}
+              hasPreviousPage={meta.hasPreviousPage}
+              onPageChange={setPage}
+              onLimitChange={setLimit}
+            />
           </SectionCard>
 
           {active ? (
@@ -645,6 +755,24 @@ export default function AppointmentsPage() {
                 </div>
                 <SectionCard title={t('appointmentOps.detail.timeline')} description={t('appointmentOps.detail.timelineDesc')} className="shadow-none">
                   <TimelineList items={timeline.length ? timeline : [{ time: formatDateTime(active.startTime), title: t('appointmentOps.timeline.scheduled'), detail: sourceLabel(active, t) }]} />
+                </SectionCard>
+                <SectionCard title={t('appointmentOps.detail.sourceBlock')} description={t('appointmentOps.detail.sourceBlockDesc')} className="shadow-none">
+                  <KeyValueList
+                    items={[
+                      { label: t('appointmentOps.detail.sourceLead'), value: active.leadId ? `#${active.leadId}` : '-' },
+                      { label: t('appointmentOps.detail.sourceBooking'), value: active.bookingId ? `#${active.bookingId}` : '-' },
+                      { label: t('appointmentOps.detail.sourceFlow'), value: t('appointmentOps.detail.sourceFlowValue') },
+                    ]}
+                  />
+                </SectionCard>
+                <SectionCard title={t('appointmentOps.detail.afterCompletion')} description={t('appointmentOps.detail.afterCompletionDesc')} className="shadow-none">
+                  <KeyValueList
+                    items={[
+                      { label: t('appointmentOps.detail.nextAction'), value: t(nextStepKey(active)) },
+                      { label: t('appointmentOps.detail.sourceLead'), value: active.leadId ? t('appointmentOps.actions.openLead') : '-' },
+                      { label: t('appointmentOps.detail.sourceBooking'), value: active.bookingId ? t('appointmentOps.actions.openBooking') : (!active.leadId ? t('appointmentOps.actions.convert') : '-') },
+                    ]}
+                  />
                   <div className="mt-5 flex flex-wrap gap-2">
                     <AdminButton variant="secondary" onClick={() => setEditOpen(true)}>{t('appointmentOps.actions.reschedule')}</AdminButton>
                     <AdminButton variant="secondary" className="text-[rgb(var(--danger))]" onClick={archiveAppointment} loading={busyAction === 'archive'}>{t('common.archive')}</AdminButton>
@@ -681,6 +809,14 @@ export default function AppointmentsPage() {
         onChange={setEditForm}
       />
     </>
+  );
+}
+
+export default function AppointmentsPage() {
+  return (
+    <Suspense fallback={null}>
+      <AppointmentsPageContent />
+    </Suspense>
   );
 }
 

@@ -98,7 +98,7 @@ export default function RoleDetailPage() {
 
       {notice ? <div className="inline-alert-base inline-alert-info">{notice}</div> : null}
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(300px,340px)] 2xl:grid-cols-[minmax(0,1fr)_360px]">
         <main className="space-y-5">
           <SectionCard title={t('rbac.roles.permissionMatrix')} description={t('rbac.roles.permissionMatrixDesc')}>
             <div className="grid gap-4">
@@ -117,7 +117,7 @@ export default function RoleDetailPage() {
           </SectionCard>
         </main>
 
-        <aside className="space-y-5">
+        <aside className="min-w-0 space-y-5">
           <AdminCard className="p-5">
             <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[rgb(var(--text-muted))]">{t('rbac.roles.roleSummary')}</p>
             <h2 className="mt-2 text-2xl font-semibold tracking-[-0.03em]">{role.label}</h2>
@@ -160,7 +160,7 @@ export default function RoleDetailPage() {
                 value={auditNote}
                 onChange={(event) => setAuditNote(event.target.value)}
                 placeholder={t('rbac.roles.auditNotePlaceholder')}
-                className="mt-3 h-11 w-full min-w-[320px] rounded-[var(--radius-sm)] border border-[rgb(var(--input-border))] bg-[rgb(var(--input-bg))] px-3.5 text-sm outline-none focus:border-[rgb(var(--input-focus-ring))]"
+                className="mt-3 h-11 w-full min-w-0 rounded-[var(--radius-sm)] border border-[rgb(var(--input-border))] bg-[rgb(var(--input-bg))] px-3.5 text-sm outline-none focus:border-[rgb(var(--input-focus-ring))] lg:min-w-[320px]"
               />
             </div>
             <div className="flex shrink-0 gap-2">

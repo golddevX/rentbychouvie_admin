@@ -1,6 +1,8 @@
 'use client';
 
 import Link from 'next/link';
+import { Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { auditLogsApi } from '@/lib/api';
 import { auditLogs as demoAuditLogs, type AuditLog, type Tone } from '@/lib/admin/demo-data';
@@ -9,6 +11,7 @@ import {
   InlineAlert,
   KeyValueList,
   PageHeader,
+  PaginationControls,
   SectionCard,
   StatusBadge,
   SummaryRow,
@@ -16,6 +19,7 @@ import {
 } from '@/components/admin/ui';
 import { AdminBadge, AdminButton, AdminInput, AdminSelect, AdminSpinner, cn } from '@/components/admin/primitives';
 import { useI18n } from '@/hooks/useI18n';
+import { useAdminListParams } from '@/hooks/useAdminListParams';
 
 const ENTITIES = ['all', 'Booking', 'Payment', 'InventoryItem', 'Rental', 'ReturnInspection', 'RentalOrder', 'Dispute', 'DisputeEvidence'];
 
@@ -76,42 +80,50 @@ function changedKeys(before?: Record<string, unknown> | null, after?: Record<str
   return [...keys].filter((key) => JSON.stringify(before?.[key]) !== JSON.stringify(after?.[key]));
 }
 
-export default function AuditLogsPage() {
+function AuditLogsPageContent() {
   const { t } = useI18n();
+  const searchParams = useSearchParams();
+  const { params, updateParams, setPage, setLimit } = useAdminListParams({
+    page: 1,
+    limit: 20,
+    sortBy: 'createdAt',
+    sortOrder: 'desc',
+  });
   const [rows, setRows] = useState<AuditLog[]>(demoAuditLogs);
   const [activeId, setActiveId] = useState(demoAuditLogs[0]?.id ?? '');
   const [loading, setLoading] = useState(true);
-  const [entity, setEntity] = useState('all');
-  const [query, setQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [meta, setMeta] = useState({ page: 1, limit: 20, total: 0, totalPages: 0, hasNextPage: false, hasPreviousPage: false });
+  const entity = searchParams.get('entity') ?? 'all';
+  const query = params.search;
 
   const active = useMemo(() => rows.find((row) => row.id === activeId) ?? rows[0], [rows, activeId]);
-  const filteredRows = useMemo(() => {
-    const term = query.trim().toLowerCase();
-    return rows.filter((row) => {
-      const entityMatch = entity === 'all' || row.entity === entity;
-      const queryMatch = !term || [row.action, row.entity, row.entityId, row.summary, row.actor, row.bookingId, row.paymentId, row.inventoryItemId]
-        .some((value) => String(value ?? '').toLowerCase().includes(term));
-      return entityMatch && queryMatch;
-    });
-  }, [rows, entity, query]);
+  const filteredRows = rows;
 
   const loadData = async () => {
     setLoading(true);
     setError(null);
     try {
       const search = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
-      const response = await auditLogsApi.getAll({
+      const response = await auditLogsApi.list({
+        page: params.page,
+        limit: params.limit,
+        search: params.search || undefined,
+        entity: entity === 'all' ? undefined : entity,
+        sortBy: params.sortBy,
+        sortOrder: params.sortOrder,
         bookingId: search.get('bookingId') || undefined,
         paymentId: search.get('paymentId') || undefined,
         inventoryItemId: search.get('inventoryItemId') || undefined,
       });
-      const next = (response.data ?? []).map(normalizeAudit);
-      setRows(next.length ? next : demoAuditLogs);
-      setActiveId((current) => next.find((row: AuditLog) => row.id === current)?.id ?? next[0]?.id ?? demoAuditLogs[0]?.id ?? '');
+      const next = (response.data?.data ?? []).map(normalizeAudit);
+      setRows(next);
+      setMeta(response.data?.meta ?? { page: params.page, limit: params.limit, total: next.length, totalPages: next.length ? 1 : 0, hasNextPage: false, hasPreviousPage: false });
+      setActiveId((current) => next.find((row: AuditLog) => row.id === current)?.id ?? next[0]?.id ?? '');
     } catch (err: any) {
       setError(err?.response?.data?.message ?? t('audit.apiFallback'));
       setRows(demoAuditLogs);
+      setMeta({ page: params.page, limit: params.limit, total: demoAuditLogs.length, totalPages: 1, hasNextPage: false, hasPreviousPage: false });
     } finally {
       setLoading(false);
     }
@@ -119,7 +131,7 @@ export default function AuditLogsPage() {
 
   useEffect(() => {
     void loadData();
-  }, []);
+  }, [entity, params.limit, params.page, params.search, params.sortBy, params.sortOrder]);
 
   const beforeAfterCount = rows.filter((row) => row.before || row.after).length;
   const bookingLinked = rows.filter((row) => row.bookingId).length;
@@ -155,8 +167,8 @@ export default function AuditLogsPage() {
       <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_430px]">
         <SectionCard title={t('audit.register')} description={t('audit.registerDesc')}>
           <div className="mb-4 grid gap-3 md:grid-cols-[1fr_220px]">
-            <AdminInput placeholder={t('audit.searchPlaceholder')} value={query} onChange={(event) => setQuery(event.target.value)} />
-            <AdminSelect value={entity} onChange={(event) => setEntity(event.target.value)}>
+            <AdminInput placeholder={t('audit.searchPlaceholder')} value={query} onChange={(event) => updateParams({ search: event.target.value }, { resetPage: true })} />
+            <AdminSelect value={entity} onChange={(event) => updateParams({ entity: event.target.value }, { resetPage: true })}>
               {ENTITIES.map((item) => <option key={item} value={item}>{entityLabel(item, t)}</option>)}
             </AdminSelect>
           </div>
@@ -182,6 +194,16 @@ export default function AuditLogsPage() {
               ])}
             />
           )}
+          <PaginationControls
+            page={meta.page}
+            limit={meta.limit}
+            total={meta.total}
+            totalPages={meta.totalPages}
+            hasNextPage={meta.hasNextPage}
+            hasPreviousPage={meta.hasPreviousPage}
+            onPageChange={setPage}
+            onLimitChange={setLimit}
+          />
         </SectionCard>
 
         {active ? (
@@ -238,5 +260,13 @@ export default function AuditLogsPage() {
         ) : null}
       </div>
     </>
+  );
+}
+
+export default function AuditLogsPage() {
+  return (
+    <Suspense fallback={null}>
+      <AuditLogsPageContent />
+    </Suspense>
   );
 }

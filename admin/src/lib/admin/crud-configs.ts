@@ -114,7 +114,7 @@ export const bookingCrudConfig: CrudModuleConfig = {
   createPermission: 'manage_bookings',
   updatePermission: 'manage_bookings',
   archivePermission: 'manage_bookings',
-  statusOptions: ['draft', 'deposit_requested', 'deposit_received', 'confirmed', 'scheduled_pickup', 'picked_up', 'return_pending', 'returned', 'completed', 'cancelled', 'late_return', 'damage_review'],
+  statusOptions: ['draft', 'deposit_requested', 'deposit_received', 'confirmed', 'awaiting_security_deposit', 'awaiting_remaining_payment', 'ready_for_pickup', 'scheduled_pickup', 'picked_up', 'return_pending', 'returned', 'settlement_pending', 'completed', 'cancelled'],
   workflow: ['Booking', 'Payment', 'Pickup', 'Return', 'Receipt'],
   columns: [
     { key: 'title', label: 'Booking' },
@@ -128,7 +128,7 @@ export const bookingCrudConfig: CrudModuleConfig = {
     { key: 'item', label: 'Product / item', required: true, section: 'Items' },
     { key: 'period', label: 'Rental period', section: 'Schedule' },
     { key: 'owner', label: 'Owner', type: 'select', options: staff.map((user) => user.name), section: 'Workflow' },
-    status(['draft', 'deposit_requested', 'deposit_received', 'confirmed', 'scheduled_pickup', 'picked_up', 'return_pending', 'returned', 'completed', 'cancelled', 'late_return', 'damage_review']),
+    status(['draft', 'deposit_requested', 'deposit_received', 'confirmed', 'awaiting_security_deposit', 'awaiting_remaining_payment', 'ready_for_pickup', 'scheduled_pickup', 'picked_up', 'return_pending', 'returned', 'settlement_pending', 'completed', 'cancelled']),
     { key: 'paid', label: 'Paid amount', type: 'number', section: 'Payment' },
     { key: 'deposit', label: 'Deposit', type: 'number', section: 'Payment' },
   ],

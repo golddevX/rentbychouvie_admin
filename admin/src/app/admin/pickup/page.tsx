@@ -1,50 +1,31 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
+import { Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
+import { useEffect, useMemo, useState } from 'react';
 import { bookingsApi, paymentsApi, pickupApi } from '@/lib/api';
-import { bookings as demoBookings, currency, type Tone } from '@/lib/admin/demo-data';
+import { bookings as demoBookings, type Tone } from '@/lib/admin/demo-data';
 import { useI18n } from '@/hooks/useI18n';
+import { useAdminListParams } from '@/hooks/useAdminListParams';
 import {
-  DataTable,
+  BookingContextCard,
+  FlowActions,
+  MoneyDisplay,
+  QueueList,
+} from '@/components/admin/order-flow-ui';
+import {
+  ActionMenu,
   FeedbackPopup,
   InlineAlert,
-  KeyValueList,
   PageHeader,
+  PaginationControls,
   SectionCard,
   StatusBadge,
   SummaryRow,
 } from '@/components/admin/ui';
-import { AdminBadge, AdminButton, AdminSpinner, cn } from '@/components/admin/primitives';
-
-type ExpectedItem = {
-  itemId: string;
-  qrCode: string;
-  productName: string;
-  variantName?: string | null;
-  serialNumber?: string;
-};
-
-type ScanRecord = {
-  qrCode: string;
-  itemId?: string;
-  productName?: string;
-  variantName?: string | null;
-  matched: boolean;
-  message: string;
-  scannedAt: string;
-};
-
-type PaymentRow = {
-  id: string;
-  bookingId: string;
-  status: string;
-  type: string;
-  amount: number;
-  amountPaid: number;
-  depositAmount: number;
-  securityDepositAmount: number;
-};
+import { AdminBadge, AdminButton, AdminInput, AdminSpinner, cn } from '@/components/admin/primitives';
 
 type PickupBooking = {
   id: string;
@@ -54,67 +35,98 @@ type PickupBooking = {
   status: string;
   pickupDate: string;
   returnDate: string;
-  totalPrice: number;
-  bookingDepositRequired: number;
-  bookingDepositPaid: number;
-  securityDepositRequired: number;
-  securityDepositHeld: number;
-  expectedItems: ExpectedItem[];
-  payments: PaymentRow[];
+  securityDepositPaid: number;
+  depositRequired: number;
+  rentalRemaining: number;
+  amountDueNow: number;
+  canPickup: boolean;
+  pickupBlockedReasons: string[];
+  productLabel: string;
+  handoverImages: string[];
+  handoverNote?: string;
+  products: Array<{
+    id: string;
+    name: string;
+    image?: string;
+    qrCode?: string;
+    status?: string;
+  }>;
 };
 
-function formatDateTime(value?: string) {
-  if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
+function parseImages(value?: string | null) {
+  if (!value) return [] as string[];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
 }
+
+type BookingPaymentSummary = {
+  rentalRemaining: number;
+  securityDepositPaid: number;
+  depositRequired?: number;
+  securityDepositRequiredByRate: number;
+  amountDueNow: number;
+  canPickup: boolean;
+  pickupBlockedReasons: string[];
+  products?: Array<{
+    id: string;
+    name: string;
+    image?: string;
+    qrCode?: string;
+    status?: string;
+  }>;
+};
 
 function normalizeStatus(value?: string) {
   return String(value ?? '').toLowerCase();
 }
 
-function paymentFromApi(row: any): PaymentRow {
-  const booking = row.booking ?? row.rental?.booking;
-  return {
-    id: row.id,
-    bookingId: row.bookingId ?? booking?.id ?? '-',
-    status: normalizeStatus(row.status),
-    type: normalizeStatus(row.type),
-    amount: Number(row.amount ?? 0),
-    amountPaid: Number(row.amountPaid ?? 0),
-    depositAmount: Number(row.depositAmount ?? 0),
-    securityDepositAmount: Number(row.securityDepositAmount ?? 0),
-  };
+function formatDateTime(value?: string) {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString('vi-VN');
 }
 
-function bookingFromApi(row: any, externalPayments: PaymentRow[]): PickupBooking {
-  const payments = [
-    ...(row.rental?.payments ?? []).map(paymentFromApi),
-    ...externalPayments.filter((payment) => payment.bookingId === row.id),
-  ];
-  const uniquePayments = Array.from(new Map(payments.map((payment) => [payment.id, payment])).values());
+function queueTone(booking: PickupBooking): Tone {
+  if (booking.amountDueNow > 0) return 'warning';
+  if (booking.canPickup) return 'success';
+  return 'neutral';
+}
+
+function bookingFromApi(row: any, summary?: BookingPaymentSummary, labels?: { unknownCustomer: string }): PickupBooking {
+  const summaryProducts = Array.isArray(summary?.products) ? summary.products : [];
+  const bookingProducts = Array.isArray(row.items)
+    ? row.items.map((item: any) => ({
+        id: item.inventoryItemId ?? item.productId,
+        name: item.product?.name ?? item.inventoryItem?.product?.name ?? '-',
+        image: item.product?.image ?? item.inventoryItem?.product?.image,
+        qrCode: item.inventoryItem?.qrCode ?? item.product?.qrCode ?? item.inventoryItemId ?? item.productId,
+        status: normalizeStatus(item.inventoryItem?.status ?? item.product?.status),
+      }))
+    : [];
+  const products = summaryProducts.length ? summaryProducts : bookingProducts;
   return {
     id: row.id,
     code: row.orderCode ?? row.bookingCode ?? row.id,
-    customer: row.customer?.name ?? row.customer ?? 'Unknown customer',
+    customer: row.customer?.name ?? row.customer ?? labels?.unknownCustomer ?? '-',
     phone: row.customer?.phone ?? row.phone,
     status: normalizeStatus(row.status),
     pickupDate: row.pickupDate ?? row.startDate ?? row.pickupAt,
     returnDate: row.returnDate ?? row.endDate ?? row.returnAt,
-    totalPrice: Number(row.totalPrice ?? row.rentalFee ?? 0),
-    bookingDepositRequired: Number(row.bookingDepositRequired ?? row.deposit ?? 0),
-    bookingDepositPaid: Number(row.bookingDepositPaid ?? 0),
-    securityDepositRequired: Number(row.securityDepositRequired ?? row.refundableDeposit ?? 0),
-    securityDepositHeld: Number(row.securityDepositHeld ?? 0),
-    expectedItems: (row.items ?? []).map((item: any) => ({
-      itemId: item.inventoryItemId,
-      qrCode: item.inventoryItem?.qrCode ?? item.inventoryItemId,
-      productName: item.product?.name ?? item.inventoryItem?.product?.name ?? '-',
-      variantName: ([item.variant?.name, item.variant?.size, item.variant?.color].filter(Boolean).join(' / ') || item.inventoryItem?.variant?.name) ?? null,
-      serialNumber: item.inventoryItem?.serialNumber,
-    })),
-    payments: uniquePayments,
+    securityDepositPaid: Number(summary?.securityDepositPaid ?? 0),
+    depositRequired: Number(summary?.depositRequired ?? summary?.securityDepositRequiredByRate ?? 0),
+    rentalRemaining: Number(summary?.rentalRemaining ?? 0),
+    amountDueNow: Number(summary?.amountDueNow ?? 0),
+    canPickup: Boolean(summary?.canPickup),
+    pickupBlockedReasons: Array.isArray(summary?.pickupBlockedReasons) ? summary.pickupBlockedReasons.map(String) : [],
+    productLabel: products.map((product: { name: string }) => product.name).join(', ') || '-',
+    handoverImages: parseImages(row.handoverRecord?.images),
+    handoverNote: row.handoverRecord?.note ?? '',
+    products,
   };
 }
 
@@ -124,112 +136,110 @@ function bookingFromDemo(row: any): PickupBooking {
     code: row.id,
     customer: row.customer,
     phone: row.phone,
-    status: row.status,
+    status: normalizeStatus(row.status),
     pickupDate: row.pickupAt,
     returnDate: row.returnAt,
-    totalPrice: row.rentalFee,
-    bookingDepositRequired: row.deposit,
-    bookingDepositPaid: row.paid >= row.deposit ? row.deposit : row.paid,
-    securityDepositRequired: row.refundableDeposit,
-    securityDepositHeld: 0,
-    expectedItems: [{
-      itemId: row.itemCode,
+    securityDepositPaid: Number(row.refundableDeposit ?? 0),
+    depositRequired: Number(row.refundableDeposit ?? 0),
+    rentalRemaining: Math.max(Number(row.rentalFee ?? 0) - Number(row.paid ?? 0), 0),
+    amountDueNow: Math.max(Number(row.rentalFee ?? 0) - Number(row.paid ?? 0), 0),
+    canPickup: false,
+    pickupBlockedReasons: ['rental_unpaid'],
+    productLabel: row.product,
+    handoverImages: [],
+    handoverNote: '',
+    products: [{
+      id: row.id,
+      name: row.product,
       qrCode: row.itemCode,
-      productName: row.product,
-      variantName: row.variant,
-      serialNumber: row.itemCode,
+      status: 'reserved',
     }],
-    payments: [],
   };
 }
 
-function completedPaidTotal(booking: PickupBooking) {
-  return Math.max(
-    booking.bookingDepositPaid,
-    booking.payments
-      .filter((payment) => payment.status === 'completed')
-      .reduce((sum, payment) => sum + Number(payment.amountPaid || payment.amount || 0), 0),
-  );
-}
-
-function securityPaid(booking: PickupBooking) {
-  return Math.max(
-    booking.securityDepositHeld,
-    booking.payments
-      .filter((payment) => payment.status === 'completed')
-      .reduce((sum, payment) => sum + Number(payment.securityDepositAmount || 0), 0),
-  );
-}
-
-function paymentPosition(booking?: PickupBooking) {
-  if (!booking) return { remaining: 0, securityDue: 0, totalToCollect: 0 };
-  const paid = completedPaidTotal(booking);
-  const remaining = Math.max(booking.totalPrice - Math.max(0, paid - booking.bookingDepositPaid), 0);
-  const securityDue = Math.max(booking.securityDepositRequired - securityPaid(booking), 0);
-  return {
-    remaining,
-    securityDue,
-    totalToCollect: remaining + securityDue,
-  };
-}
-
-function isPickupReady(booking?: PickupBooking) {
-  return !!booking && ['confirmed', 'scheduled_pickup'].includes(booking.status);
-}
-
-function itemMatched(item: ExpectedItem, scans: ScanRecord[]) {
-  return scans.some((scan) => scan.matched && scan.itemId === item.itemId);
-}
-
-function queueTone(booking: PickupBooking): Tone {
-  if (!isPickupReady(booking)) return 'warning';
-  const position = paymentPosition(booking);
-  return position.totalToCollect > 0 ? 'warning' : 'success';
-}
-
-export default function PickupDeskPage() {
+function PickupDeskPageContent() {
   const { t } = useI18n();
-  const scanInputRef = useRef<HTMLInputElement>(null);
+  const labels = useMemo(() => ({ unknownCustomer: t('leadOps.fallback.unknownCustomer') }), [t]);
+  const searchParams = useSearchParams();
+  const { params, setPage, setLimit } = useAdminListParams({
+    page: 1,
+    limit: 20,
+    sortBy: 'pickupDate',
+    sortOrder: 'asc',
+  });
   const [rows, setRows] = useState<PickupBooking[]>(demoBookings.map(bookingFromDemo));
-  const [activeId, setActiveId] = useState(demoBookings[0]?.id ?? '');
+  const [activeId, setActiveId] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [scanValue, setScanValue] = useState('');
-  const [scansByBooking, setScansByBooking] = useState<Record<string, ScanRecord[]>>({});
+  const [handoverImages, setHandoverImages] = useState<string[]>(['', '', '', '']);
+  const [handoverNote, setHandoverNote] = useState('');
   const [feedback, setFeedback] = useState<{ tone: Tone; message: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [meta, setMeta] = useState({ page: 1, limit: 20, total: 0, totalPages: 0, hasNextPage: false, hasPreviousPage: false });
 
   const active = useMemo(() => rows.find((row) => row.id === activeId) ?? rows[0], [activeId, rows]);
-  const activeScans = active ? scansByBooking[active.id] ?? [] : [];
-  const matchedCount = active ? active.expectedItems.filter((item) => itemMatched(item, activeScans)).length : 0;
-  const missingCount = active ? Math.max(active.expectedItems.length - matchedCount, 0) : 0;
-  const payment = paymentPosition(active);
-  const canConfirm = Boolean(active && isPickupReady(active) && missingCount === 0 && payment.totalToCollect <= 0 && active.expectedItems.length > 0);
+  const reviewMode = Boolean(active && ['picked_up', 'return_pending', 'settlement_pending', 'returned', 'completed'].includes(active.status));
+  const completedImages = handoverImages.filter((value) => value.trim()).length;
+  const canConfirm = Boolean(
+    active
+    && !reviewMode
+    && active.canPickup
+    && active.products.length > 0
+    && completedImages === 4,
+  );
 
   const loadBookings = async () => {
     setLoading(true);
     setError(null);
     try {
-      const [bookingsRes, paymentsRes] = await Promise.allSettled([
-        bookingsApi.getAll(),
-        paymentsApi.getAll(),
-      ]);
-      const paymentRows = paymentsRes.status === 'fulfilled' ? (paymentsRes.value.data ?? []).map(paymentFromApi) : [];
-      const nextRows = bookingsRes.status === 'fulfilled'
-        ? (bookingsRes.value.data ?? []).map((booking: any) => bookingFromApi(booking, paymentRows))
-        : demoBookings.map(bookingFromDemo);
-      const queue = nextRows.filter((booking: PickupBooking) => ['deposit_received', 'confirmed', 'scheduled_pickup'].includes(booking.status));
-      const sourceRows = queue.length ? queue : nextRows;
-      setRows(sourceRows.length ? sourceRows : demoBookings.map(bookingFromDemo));
-      const queryBooking = new URLSearchParams(window.location.search).get('booking');
-      setActiveId((current) =>
-        sourceRows.find((booking: PickupBooking) => booking.id === queryBooking)?.id ??
-        sourceRows.find((booking: PickupBooking) => booking.id === current)?.id ??
-        sourceRows[0]?.id ??
-        demoBookings[0]?.id ??
-        '',
+      const bookingsRes = await bookingsApi.list({
+        page: params.page,
+        limit: params.limit,
+        sortBy: 'pickupDate',
+        sortOrder: 'asc',
+        statuses: 'DEPOSIT_RECEIVED,CONFIRMED,READY_FOR_PICKUP,AWAITING_REMAINING_PAYMENT,AWAITING_SECURITY_DEPOSIT',
+      });
+      const bookingSource = bookingsRes.data?.data ?? [];
+      setMeta(bookingsRes.data?.meta ?? { page: params.page, limit: params.limit, total: bookingSource.length, totalPages: bookingSource.length ? 1 : 0, hasNextPage: false, hasPreviousPage: false });
+      const summaryResults = await Promise.allSettled(
+        bookingSource.map((booking: any) => paymentsApi.getByBooking(booking.id)),
       );
-      if (bookingsRes.status === 'rejected') setError(t('pickupOps.errors.loadFallback'));
+      const nextRows = bookingSource.map((booking: any, index: number) => {
+        const summaryResult = summaryResults[index];
+        const summary = summaryResult.status === 'fulfilled' ? summaryResult.value.data?.summary as BookingPaymentSummary : undefined;
+        return bookingFromApi(booking, summary, labels);
+      });
+      const queryBooking = searchParams.get('booking');
+      let sourceRows = nextRows;
+      if (queryBooking && !sourceRows.some((booking: PickupBooking) => booking.id === queryBooking)) {
+        try {
+          const [bookingRes, paymentRes] = await Promise.all([
+            bookingsApi.getById(queryBooking),
+            paymentsApi.getByBooking(queryBooking),
+          ]);
+          sourceRows = [
+            bookingFromApi(bookingRes.data, paymentRes.data?.summary as BookingPaymentSummary | undefined, labels),
+            ...sourceRows,
+          ];
+        } catch {
+          // Keep the queue visible even when the review booking cannot be loaded.
+        }
+      }
+      setRows(sourceRows);
+      setActiveId((current) => {
+        return sourceRows.find((booking: PickupBooking) => booking.id === queryBooking)?.id
+          ?? sourceRows.find((booking: PickupBooking) => booking.id === current)?.id
+          ?? sourceRows[0]?.id
+          ?? '';
+      });
+      if (summaryResults.some((result) => result.status === 'rejected')) {
+        setError(t('pickupOps.errors.loadFallback'));
+      }
+    } catch {
+      setRows(demoBookings.map(bookingFromDemo));
+      setMeta({ page: 1, limit: demoBookings.length, total: demoBookings.length, totalPages: 1, hasNextPage: false, hasPreviousPage: false });
+      setActiveId(demoBookings[0]?.id ?? '');
+      setError(t('pickupOps.errors.loadFallback'));
     } finally {
       setLoading(false);
     }
@@ -237,233 +247,259 @@ export default function PickupDeskPage() {
 
   useEffect(() => {
     void loadBookings();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [params.limit, params.page]);
 
   useEffect(() => {
-    setScanValue('');
-    setFeedback(null);
-    setTimeout(() => scanInputRef.current?.focus(), 0);
-  }, [activeId]);
-
-  const scanQr = async (qrCode = scanValue.trim()) => {
-    if (!active || !qrCode || busy) return;
-    setBusy(true);
-    setFeedback(null);
-    setError(null);
-    try {
-      const response = await pickupApi.scan(active.id, qrCode);
-      const data = response.data;
-      const record: ScanRecord = {
-        qrCode,
-        itemId: data.scannedItem?.id,
-        productName: data.scannedItem?.productName,
-        variantName: data.scannedItem?.variantName,
-        matched: Boolean(data.matched),
-        message: data.message,
-        scannedAt: new Date().toISOString(),
-      };
-      setScansByBooking((current) => {
-        const existing = current[active.id] ?? [];
-        const withoutDuplicate = existing.filter((item) => item.qrCode !== qrCode);
-        return { ...current, [active.id]: [record, ...withoutDuplicate] };
-      });
-      setFeedback({ tone: data.matched ? 'success' : 'danger', message: data.message });
-      setScanValue('');
-    } catch (err: any) {
-      setFeedback({ tone: 'danger', message: err?.response?.data?.message ?? t('pickupOps.errors.scanFailed') });
-    } finally {
-      setBusy(false);
-      setTimeout(() => scanInputRef.current?.focus(), 0);
+    if (reviewMode && active) {
+      setHandoverImages(active.handoverImages.length ? active.handoverImages : ['', '', '', '']);
+      setHandoverNote(active.handoverNote ?? '');
+      return;
     }
-  };
+    setHandoverImages(['', '', '', '']);
+    setHandoverNote('');
+  }, [active, activeId, reviewMode]);
 
   const confirmPickup = async () => {
     if (!active || !canConfirm) return;
     setBusy(true);
-    setFeedback(null);
     setError(null);
+    setFeedback(null);
     try {
-      const qrCodes = active.expectedItems.map((item) => item.qrCode);
-      await pickupApi.confirm(active.id, qrCodes);
-      setFeedback({ tone: 'success', message: t('pickupOps.success.confirmed') });
+      await pickupApi.confirm(active.id, handoverImages.map((value) => value.trim()), handoverNote || undefined);
+      setFeedback({ tone: 'success', message: t('pickup.feedback.confirmed') });
       await loadBookings();
     } catch (err: any) {
       setFeedback({ tone: 'danger', message: err?.response?.data?.message ?? t('pickupOps.errors.confirmFailed') });
     } finally {
       setBusy(false);
-      setTimeout(() => scanInputRef.current?.focus(), 0);
     }
   };
 
   return (
     <>
-      <FeedbackPopup
-        feedback={feedback}
-        onClose={() => {
-          setFeedback(null);
-        }}
-      />
+      <FeedbackPopup feedback={feedback} error={error} onClose={() => { setFeedback(null); setError(null); }} />
 
       <PageHeader
         eyebrow={t('pickupOps.eyebrow')}
-        title={t('pickupOps.title')}
-        subtitle={t('pickupOps.subtitle')}
-        nextStep={active ? `${active.code}: ${payment.totalToCollect > 0 ? t('pickupOps.next.collectPayment') : missingCount > 0 ? t('pickupOps.next.scanMissing') : t('pickupOps.next.confirm')}` : t('pickupOps.next.selectBooking')}
-        actions={
+        title={t('pickup.title')}
+        subtitle={t('pickup.subtitle')}
+        nextStep={active ? `${active.code}: ${active.canPickup ? t('handover.confirm') : t('payment.summary.amount_due_now')}` : t('pickupOps.next.selectBooking')}
+        actions={(
           <>
-            <AdminButton variant="secondary" onClick={loadBookings} loading={loading}>{t('common.refresh')}</AdminButton>
-            <Link href="/admin/payments" className="button-secondary">{t('pickupOps.actions.collectPayment')}</Link>
-            <AdminButton onClick={confirmPickup} loading={busy} disabled={!canConfirm}>{t('pickupOps.actions.confirmPickup')}</AdminButton>
+            <AdminButton variant="secondary" onClick={() => void loadBookings()} loading={loading}>{t('common.refresh')}</AdminButton>
+            {active && !reviewMode && !active.canPickup ? <Link href={`/admin/payments?booking=${active.id}`} className="button-primary">{t('pickup.actions.open_payment')}</Link> : null}
+            {active && !reviewMode && active.canPickup ? <AdminButton onClick={() => void confirmPickup()} loading={busy} disabled={!canConfirm}>{t('handover.confirm')}</AdminButton> : null}
+            {active ? (
+              <ActionMenu
+                label={t('common.moreActions')}
+                items={[
+                  { label: reviewMode ? t('booking.reviewPayment') : t('pickup.actions.open_payment'), href: `/admin/payments?booking=${active.id}` },
+                  { label: t('pickup.actions.open_booking'), href: `/admin/bookings/${active.id}` },
+                  { label: t('booking.reviewReturn'), href: `/admin/returns?booking=${active.id}` },
+                ]}
+              />
+            ) : null}
           </>
-        }
+        )}
       />
 
       <SummaryRow
         items={[
           { label: t('pickupOps.stats.queue'), value: rows.length, detail: t('pickupOps.stats.queueDetail'), tone: 'info' },
-          { label: t('pickupOps.stats.active'), value: active?.code ?? '-', detail: active?.customer ?? '-', tone: queueTone(active ?? rows[0]) },
-          { label: t('pickupOps.stats.scanned'), value: `${matchedCount}/${active?.expectedItems.length ?? 0}`, detail: missingCount ? t('pickupOps.stats.missingCount', { count: missingCount }) : t('pickupOps.stats.allMatched'), tone: missingCount ? 'warning' : 'success' },
-          { label: t('pickupOps.stats.collect'), value: currency(payment.totalToCollect), detail: t('pickupOps.stats.collectDetail'), tone: payment.totalToCollect > 0 ? 'danger' : 'success' },
+          { label: t('pickupOps.stats.active'), value: active?.code ?? '-', detail: active?.customer ?? '-', tone: active ? queueTone(active) : 'neutral' },
+          { label: t('handover.images'), value: `${completedImages}/4`, detail: t('pickup.subtitle'), tone: completedImages === 4 ? 'success' : 'warning' },
+          { label: t('payment.summary.amount_due_now'), value: <MoneyDisplay value={active?.amountDueNow ?? 0} strong />, detail: t('pickupOps.stats.collectDetail'), tone: (active?.amountDueNow ?? 0) > 0 ? 'danger' : 'success' },
         ]}
       />
 
+      <PaginationControls
+        page={meta.page}
+        limit={meta.limit}
+        total={meta.total}
+        totalPages={meta.totalPages}
+        hasNextPage={meta.hasNextPage}
+        hasPreviousPage={meta.hasPreviousPage}
+        onPageChange={setPage}
+        onLimitChange={setLimit}
+      />
+
       <div className="mt-6 grid gap-6 xl:grid-cols-[390px_1fr]">
-        <SectionCard title={t('pickupOps.queue.title')} description={t('pickupOps.queue.description')}>
-          {loading ? (
-            <div className="flex items-center gap-2 text-sm text-[rgb(var(--text-secondary))]"><AdminSpinner /> {t('common.loading')}</div>
-          ) : (
-            <div className="space-y-2">
-              {rows.map((booking) => {
-                const position = paymentPosition(booking);
-                return (
-                  <button
-                    key={booking.id}
-                    type="button"
-                    onClick={() => setActiveId(booking.id)}
-                    className={cn(
-                      'w-full rounded-2xl border p-4 text-left transition hover:-translate-y-0.5 hover:shadow-[var(--shadow-soft)]',
-                      active?.id === booking.id ? 'border-[rgb(var(--accent-solid))] bg-[rgb(var(--surface-4))]' : 'border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-2))]',
-                    )}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="font-semibold text-[rgb(var(--text-primary))]">{booking.code} / {booking.customer}</p>
-                        <p className="mt-1 text-xs text-[rgb(var(--text-muted))]">{formatDateTime(booking.pickupDate)}</p>
-                      </div>
-                      <StatusBadge value={booking.status} tone={queueTone(booking)} />
-                    </div>
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      <AdminBadge tone={position.totalToCollect > 0 ? 'warning' : 'success'}>{currency(position.totalToCollect)}</AdminBadge>
-                      <AdminBadge tone={isPickupReady(booking) ? 'success' : 'warning'}>{isPickupReady(booking) ? t('pickupOps.ready') : t('pickupOps.notReady')}</AdminBadge>
-                    </div>
-                  </button>
-                );
-              })}
+        <QueueList
+          title={t('pickup.queue.title')}
+          description={t('pickup.queue.description')}
+          items={rows.map((booking) => ({
+            id: booking.id,
+            title: `${booking.code} / ${booking.customer}`,
+            subtitle: booking.productLabel,
+            meta: `${t('pickup.queue.pickup_time')}: ${formatDateTime(booking.pickupDate)}`,
+            helper: booking.amountDueNow > 0 ? t('pickup.validation.missing_payment') : t('pickup.queue.ready_helper'),
+            badges: [
+              { label: booking.amountDueNow > 0 ? t('pickup.queue.payment_due') : t('pickup.queue.payment_ready'), tone: booking.amountDueNow > 0 ? 'warning' : 'success' },
+              { label: `${booking.products.length} ${t('pickup.queue.expected_items')}`, tone: 'info' },
+            ],
+            nextStep: booking.amountDueNow > 0 ? t('pickup.actions.open_payment') : t('handover.confirm'),
+            status: booking.status,
+            statusTone: queueTone(booking),
+          }))}
+          activeId={active?.id}
+          onSelect={setActiveId}
+          emptyState={loading ? (
+            <div className="flex items-center gap-2 rounded-[24px] border border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-3))]/60 px-4 py-5 text-sm text-[rgb(var(--text-secondary))]">
+              <AdminSpinner />
+              {t('common.loading')}
             </div>
-          )}
-        </SectionCard>
+          ) : undefined}
+        />
 
         <div className="space-y-6">
           {active ? (
             <>
-              <SectionCard title={t('pickupOps.workspace.title')} description={t('pickupOps.workspace.description')}>
-                {error ? <div className="mb-4"><InlineAlert tone="warning">{error}</InlineAlert></div> : null}
-                {feedback ? <div className="mb-4"><InlineAlert tone={feedback.tone}>{feedback.message}</InlineAlert></div> : null}
-                {!isPickupReady(active) ? <div className="mb-4"><InlineAlert tone="warning">{t('pickupOps.validation.notReady')}</InlineAlert></div> : null}
-                {payment.totalToCollect > 0 ? <div className="mb-4"><InlineAlert tone="danger">{t('pickupOps.validation.paymentBlocked')}</InlineAlert></div> : null}
+              <BookingContextCard
+                eyebrow={t('pickup.workspace.title')}
+                title={`${active.code} / ${active.customer}`}
+                subtitle={active.productLabel}
+                status={active.status}
+                statusTone={queueTone(active)}
+                badges={[
+                  { label: reviewMode ? t('booking.reviewPickup') : active.canPickup ? t('pickup.queue.payment_ready') : t('pickup.queue.payment_due'), tone: reviewMode ? 'info' : active.canPickup ? 'success' : 'warning' },
+                  { label: `${completedImages}/4`, tone: completedImages === 4 ? 'success' : 'info' },
+                ]}
+                details={[
+                  { label: t('common.rental_order_code'), value: active.code },
+                  { label: t('pickup.context.customer'), value: active.customer },
+                  { label: t('pickup.context.phone'), value: active.phone ?? '-' },
+                  { label: t('lead.deposit.paid'), value: <MoneyDisplay value={active.securityDepositPaid} tone="info" strong /> },
+                  { label: t('lead.deposit.required'), value: <MoneyDisplay value={active.depositRequired} tone="warning" strong /> },
+                  { label: t('payment.rental.remaining'), value: <MoneyDisplay value={active.rentalRemaining} tone={active.rentalRemaining > 0 ? 'danger' : 'success'} strong /> },
+                  { label: t('pickup.context.pickup_time'), value: formatDateTime(active.pickupDate) },
+                  { label: t('pickup.context.expected_item'), value: `${active.products.length} ${t('pickup.queue.expected_items')}` },
+                ]}
+                actions={(
+                  <FlowActions
+                    links={[
+                      { href: `/admin/payments?booking=${active.id}`, label: reviewMode ? t('booking.reviewPayment') : t('pickup.actions.open_payment'), variant: !reviewMode && !active.canPickup ? 'primary' : 'secondary' },
+                      { href: `/admin/bookings/${active.id}`, label: t('pickup.actions.open_booking'), variant: 'secondary' },
+                      { href: `/admin/returns?booking=${active.id}`, label: t('booking.reviewReturn'), variant: 'secondary' },
+                      ...(!reviewMode ? [{ label: t('handover.confirm'), onClick: () => void confirmPickup(), variant: active.canPickup ? 'primary' as const : 'secondary' as const, disabled: !canConfirm }] : []),
+                    ]}
+                  />
+                )}
+              />
 
-                <div className="grid gap-5 lg:grid-cols-[1fr_340px]">
-                  <div className="space-y-5">
-                    <div className="rounded-2xl border border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-3))] p-5">
-                      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                        <div>
-                          <p className="text-xs font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">{t('pickupOps.bookingContext')}</p>
-                          <h2 className="mt-2 text-2xl font-semibold tracking-[-0.03em]">{active.customer}</h2>
-                          <p className="mt-2 text-sm text-[rgb(var(--text-secondary))]">{active.code} / {active.phone ?? '-'}</p>
-                        </div>
-                        <StatusBadge value={active.status} tone={queueTone(active)} />
-                      </div>
-                    </div>
-
-                    <KeyValueList
-                      items={[
-                        { label: t('pickupOps.fields.pickup'), value: formatDateTime(active.pickupDate) },
-                        { label: t('pickupOps.fields.return'), value: formatDateTime(active.returnDate) },
-                        { label: t('pickupOps.fields.items'), value: active.expectedItems.length },
-                        { label: t('pickupOps.fields.matched'), value: `${matchedCount}/${active.expectedItems.length}` },
-                      ]}
+              <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
+                <SectionCard title={t('pickupOps.payment.title')} description={t('pickupOps.payment.description')}>
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <QuickStateRow
+                      label={t('payment.rental.remaining')}
+                      value={<MoneyDisplay value={active.rentalRemaining} strong tone={active.rentalRemaining > 0 ? 'danger' : 'success'} />}
                     />
+                    <QuickStateRow
+                      label={t('payment.deposit.remaining')}
+                      value={<MoneyDisplay value={Math.max(active.depositRequired - active.securityDepositPaid, 0)} strong tone={active.securityDepositPaid >= active.depositRequired ? 'success' : 'warning'} />}
+                    />
+                    <QuickStateRow
+                      label={t('handover.images')}
+                      value={<span className={cn('font-semibold', completedImages === 4 ? 'text-[rgb(var(--success))]' : 'text-[rgb(var(--warning))]')}>{completedImages}/4</span>}
+                    />
+                  </div>
+                  <div className="mt-4">
+                    {reviewMode ? (
+                      <InlineAlert tone="success">{t('pickup.feedback.confirmed')}</InlineAlert>
+                    ) : !active.canPickup ? (
+                      <InlineAlert tone="warning">
+                        {active.pickupBlockedReasons.includes('deposit_missing')
+                          ? t('pickup.blocked.deposit_missing')
+                          : t('pickup.blocked.unpaid')}
+                      </InlineAlert>
+                    ) : completedImages < 4 ? (
+                      <InlineAlert tone="info">{t('pickupOps.next.scanMissing')}</InlineAlert>
+                    ) : (
+                      <InlineAlert tone="success">{t('pickupOps.next.confirm')}</InlineAlert>
+                    )}
+                  </div>
+                </SectionCard>
 
-                    <div className="rounded-2xl border border-[rgb(var(--surface-border))] bg-[rgb(var(--surface-2))] p-4">
-                      <label className="grid gap-2 text-sm font-semibold">
-                        {t('pickupOps.scan.label')}
-                        <input
-                          ref={scanInputRef}
-                          className="field h-14 text-lg font-semibold tracking-wide"
-                          value={scanValue}
-                          onChange={(event) => setScanValue(event.target.value)}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter') {
-                              event.preventDefault();
-                              void scanQr();
-                            }
-                          }}
-                          placeholder={t('pickupOps.scan.placeholder')}
-                          autoFocus
-                        />
-                      </label>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <AdminButton onClick={() => scanQr()} loading={busy} disabled={!scanValue.trim()}>{t('pickupOps.scan.submit')}</AdminButton>
-                        <AdminButton variant="secondary" onClick={() => { setScanValue(''); scanInputRef.current?.focus(); }}>{t('pickupOps.scan.clear')}</AdminButton>
+                <SectionCard title={t('booking.products.title')} description={t('pickup.expected.description')}>
+                  <div className="space-y-3">
+                    {active.products.map((product) => (
+                      <div key={product.id} className="rounded-[22px] border border-[rgb(var(--surface-border))]/75 bg-[rgb(var(--surface-3))]/60 px-4 py-4">
+                        <div className="grid gap-4 md:grid-cols-[88px_minmax(0,1fr)_auto] md:items-center">
+                          <div className="overflow-hidden rounded-[18px] border border-[rgb(var(--surface-border))]/70 bg-[rgb(var(--surface-2))]/70">
+                            {product.image ? (
+                              <img src={product.image} alt={product.name} className="h-20 w-full object-cover" />
+                            ) : (
+                              <div className="grid h-20 w-full place-items-center text-xs text-[rgb(var(--text-muted))]">{t('return.context.expected_item')}</div>
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold text-[rgb(var(--text-primary))]">{product.name}</p>
+                            <p className="mt-1 text-xs text-[rgb(var(--text-secondary))]">{product.qrCode ?? '-'}</p>
+                          </div>
+                          <StatusBadge value={product.status ?? 'reserved'} tone={product.status === 'reserved' ? 'info' : 'neutral'} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </SectionCard>
+
+                <SectionCard title={t('handover.images')} description={t('pickup.subtitle')}>
+                  {reviewMode ? (
+                    <div className="space-y-4">
+                      {handoverImages.length ? (
+                        <div className="grid gap-4 md:grid-cols-2">
+                          {handoverImages.map((image, index) => (
+                            <div key={`${active.id}-handover-review-${index}`} className="overflow-hidden rounded-[20px] border border-[rgb(var(--surface-border))]/75 bg-[rgb(var(--surface-2))]/70">
+                              <img src={image} alt={`${active.code}-handover-${index + 1}`} className="h-44 w-full object-cover" />
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="rounded-[20px] border border-dashed border-[rgb(var(--surface-border))]/75 bg-[rgb(var(--surface-3))]/58 px-4 py-4 text-sm text-[rgb(var(--text-secondary))]">
+                          {t('pickup.validation.pending')}
+                        </div>
+                      )}
+                      <div className="rounded-[20px] border border-[rgb(var(--surface-border))]/70 bg-[rgb(var(--surface-3))]/58 px-4 py-3 text-sm text-[rgb(var(--text-secondary))]">
+                        {t('return.inspection.notes')}: <span className="font-semibold text-[rgb(var(--text-primary))]">{handoverNote || '-'}</span>
                       </div>
                     </div>
-                  </div>
+                  ) : (
+                    <div className="grid gap-4">
+                      {[
+                        'handover.image_front',
+                        'handover.image_back',
+                        'handover.image_accessory',
+                        'handover.image_overview',
+                      ].map((key, index) => (
+                        <label key={key} className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
+                          {t(key)}
+                          <AdminInput
+                            value={handoverImages[index]}
+                            onChange={(event) => {
+                              const next = [...handoverImages];
+                              next[index] = event.target.value;
+                              setHandoverImages(next);
+                            }}
+                            placeholder="https://..."
+                          />
+                        </label>
+                      ))}
 
-                  <SectionCard title={t('pickupOps.payment.title')} description={t('pickupOps.payment.description')} className="shadow-none">
-                    <div className="space-y-3 text-sm">
-                      <MoneyRow label={t('pickupOps.payment.remaining')} value={payment.remaining} tone={payment.remaining > 0 ? 'danger' : 'success'} />
-                      <MoneyRow label={t('pickupOps.payment.securityDeposit')} value={payment.securityDue} tone={payment.securityDue > 0 ? 'warning' : 'success'} />
-                      <MoneyRow label={t('pickupOps.payment.totalToCollect')} value={payment.totalToCollect} tone={payment.totalToCollect > 0 ? 'danger' : 'success'} strong />
+                      <label className="grid gap-2 text-sm font-semibold text-[rgb(var(--text-primary))]">
+                        {t('return.inspection.notes')}
+                        <textarea className="field h-24 py-3" value={handoverNote} onChange={(event) => setHandoverNote(event.target.value)} />
+                      </label>
+
+                      <div className="rounded-[20px] border border-[rgb(var(--surface-border))]/70 bg-[rgb(var(--surface-3))]/58 px-4 py-3 text-sm text-[rgb(var(--text-secondary))]">
+                        {t('pickup.scan_progress')}: <span className="font-semibold text-[rgb(var(--text-primary))]">{completedImages}/4</span>
+                      </div>
+
+                      <AdminButton onClick={() => void confirmPickup()} loading={busy} disabled={!canConfirm}>
+                        {t('handover.confirm')}
+                      </AdminButton>
                     </div>
-                    <div className="mt-5 grid gap-2">
-                      <Link className="button-primary w-full text-center" href={`/admin/payments/from-booking/${active.id}`}>{t('pickupOps.actions.collectPayment')}</Link>
-                      <AdminButton className="w-full" onClick={confirmPickup} loading={busy} disabled={!canConfirm}>{t('pickupOps.actions.confirmPickup')}</AdminButton>
-                    </div>
-                  </SectionCard>
-                </div>
-              </SectionCard>
-
-              <SectionCard title={t('pickupOps.expected.title')} description={t('pickupOps.expected.description')}>
-                <DataTable
-                  columns={[t('pickupOps.expected.item'), t('pickupOps.expected.product'), t('pickupOps.expected.expectedQr'), t('pickupOps.expected.scanState')]}
-                  rows={active.expectedItems.map((item) => {
-                    const matched = itemMatched(item, activeScans);
-                    return [
-                      <div key={`${item.itemId}-item`}>
-                        <p className="font-semibold text-[rgb(var(--text-primary))]">{item.serialNumber ?? item.itemId}</p>
-                        <p className="text-xs text-[rgb(var(--text-muted))]">{item.variantName ?? '-'}</p>
-                      </div>,
-                      item.productName,
-                      <span key={`${item.itemId}-qr`} className="font-mono text-xs">{item.qrCode}</span>,
-                      <StatusBadge key={`${item.itemId}-status`} value={matched ? t('pickupOps.expected.matched') : t('pickupOps.expected.missing')} tone={matched ? 'success' : 'warning'} />,
-                    ];
-                  })}
-                />
-              </SectionCard>
-
-              <SectionCard title={t('pickupOps.scanLog.title')} description={t('pickupOps.scanLog.description')}>
-                <DataTable
-                  empty={t('pickupOps.scanLog.empty')}
-                  columns={[t('pickupOps.scanLog.qr'), t('pickupOps.scanLog.item'), t('common.status'), t('pickupOps.scanLog.time')]}
-                  rows={activeScans.map((scan) => [
-                    <span key={`${scan.qrCode}-qr`} className="font-mono text-xs">{scan.qrCode}</span>,
-                    scan.productName ?? '-',
-                    <StatusBadge key={`${scan.qrCode}-status`} value={scan.matched ? t('pickupOps.expected.matched') : t('pickupOps.expected.mismatch')} tone={scan.matched ? 'success' : 'danger'} />,
-                    formatDateTime(scan.scannedAt),
-                  ])}
-                />
-              </SectionCard>
+                  )}
+                </SectionCard>
+              </div>
             </>
           ) : null}
         </div>
@@ -472,13 +508,19 @@ export default function PickupDeskPage() {
   );
 }
 
-function MoneyRow({ label, value, tone, strong = false }: { label: string; value: number; tone: Tone; strong?: boolean }) {
+export default function PickupDeskPage() {
   return (
-    <div className={cn('flex items-center justify-between rounded-xl bg-[rgb(var(--surface-3))] px-4 py-3', strong && 'border border-[rgb(var(--surface-border))]')}>
-      <span className="text-[rgb(var(--text-secondary))]">{label}</span>
-      <span className={cn('font-semibold', tone === 'danger' && 'text-[rgb(var(--danger))]', tone === 'warning' && 'text-[rgb(var(--warning))]', tone === 'success' && 'text-[rgb(var(--success))]')}>
-        {currency(value)}
-      </span>
+    <Suspense fallback={<div className="flex items-center gap-2 text-sm text-[rgb(var(--text-secondary))]"><AdminSpinner />...</div>}>
+      <PickupDeskPageContent />
+    </Suspense>
+  );
+}
+
+function QuickStateRow({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="rounded-[20px] border border-[rgb(var(--surface-border))]/70 bg-[rgb(var(--surface-3))]/60 px-4 py-3.5">
+      <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[rgb(var(--text-muted))]">{label}</p>
+      <div className="mt-2 text-sm text-[rgb(var(--text-primary))]">{value}</div>
     </div>
   );
 }

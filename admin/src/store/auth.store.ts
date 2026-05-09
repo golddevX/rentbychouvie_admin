@@ -12,38 +12,43 @@ interface Auth {
 }
 
 interface AuthStore extends Auth {
+  hydrated: boolean;
+  hydrateFromStorage: () => void;
   login: (accessToken: string, refreshToken: string, user: Auth['user']) => void;
   logout: () => void;
   setAccessToken: (accessToken: string | null) => void;
   setUser: (user: Auth['user']) => void;
 }
 
-const initialAccessToken =
-  typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
-
-const initialRefreshToken =
-  typeof window !== 'undefined' ? localStorage.getItem('refreshToken') : null;
-
-const initialUser =
-  typeof window !== 'undefined'
-    ? (() => {
-        const stored = localStorage.getItem('user');
-        if (!stored) return null;
-        try {
-          return JSON.parse(stored) as Auth['user'];
-        } catch {
-          return null;
-        }
-      })()
-    : null;
+function readStoredUser(): Auth['user'] {
+  if (typeof window === 'undefined') return null;
+  const stored = localStorage.getItem('user');
+  if (!stored) return null;
+  try {
+    return JSON.parse(stored) as Auth['user'];
+  } catch {
+    return null;
+  }
+}
 
 export const useAuthStore = create<AuthStore>((set) => ({
-  accessToken: initialAccessToken,
-  refreshToken: initialRefreshToken,
-  user: initialUser,
+  accessToken: null,
+  refreshToken: null,
+  user: null,
+  hydrated: false,
+
+  hydrateFromStorage: () => {
+    if (typeof window === 'undefined') return;
+    set({
+      accessToken: localStorage.getItem('accessToken'),
+      refreshToken: localStorage.getItem('refreshToken'),
+      user: readStoredUser(),
+      hydrated: true,
+    });
+  },
 
   login: (accessToken, refreshToken, user) => {
-    set({ accessToken, refreshToken, user });
+    set({ accessToken, refreshToken, user, hydrated: true });
     if (typeof window !== 'undefined') {
       localStorage.setItem('accessToken', accessToken);
       localStorage.setItem('refreshToken', refreshToken);
@@ -52,7 +57,7 @@ export const useAuthStore = create<AuthStore>((set) => ({
   },
 
   logout: () => {
-    set({ accessToken: null, refreshToken: null, user: null });
+    set({ accessToken: null, refreshToken: null, user: null, hydrated: true });
     if (typeof window !== 'undefined') {
       localStorage.removeItem('accessToken');
       localStorage.removeItem('refreshToken');
@@ -61,7 +66,7 @@ export const useAuthStore = create<AuthStore>((set) => ({
   },
 
   setAccessToken: (accessToken) => {
-    set({ accessToken });
+    set({ accessToken, hydrated: true });
     if (typeof window !== 'undefined') {
       if (accessToken) {
         localStorage.setItem('accessToken', accessToken);
@@ -71,5 +76,14 @@ export const useAuthStore = create<AuthStore>((set) => ({
     }
   },
 
-  setUser: (user) => set({ user }),
+  setUser: (user) => {
+    set({ user, hydrated: true });
+    if (typeof window !== 'undefined') {
+      if (user) {
+        localStorage.setItem('user', JSON.stringify(user));
+      } else {
+        localStorage.removeItem('user');
+      }
+    }
+  },
 }));

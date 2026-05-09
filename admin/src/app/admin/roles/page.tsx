@@ -36,14 +36,14 @@ export default function RolesPage() {
         ]}
       />
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(300px,320px)] 2xl:grid-cols-[minmax(0,1fr)_340px]">
         <div className="grid gap-5 lg:grid-cols-2">
           {defaultRbacRoles.map((role) => (
             <RoleCapabilityPanel key={role.id} role={role.id} userCount={counts[role.id]} />
           ))}
         </div>
 
-        <aside className="space-y-5">
+        <aside className="min-w-0 space-y-5">
           <AdminCard className="p-5">
             <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[rgb(var(--text-muted))]">{t('rbac.roles.accessPolicy')}</p>
             <h2 className="mt-2 text-xl font-semibold tracking-[-0.02em]">{t('rbac.roles.carefulTitle')}</h2>

@@ -26,7 +26,7 @@ export default function AdminDashboardPage() {
   const previewQueue = previewRequests.filter((request) => ['pending', 'processing'].includes(request.status)).length;
   const maintenance = inventory.filter((item) => item.status === 'maintenance' || item.status === 'damaged').length;
   const pickupQueue = bookings.filter((booking) => ['deposit_received', 'confirmed', 'scheduled_pickup'].includes(booking.status));
-  const returnQueue = bookings.filter((booking) => ['picked_up', 'return_pending', 'damage_review'].includes(booking.status));
+  const returnQueue = bookings.filter((booking) => ['picked_up', 'return_pending', 'settlement_pending'].includes(booking.status));
   const pendingPayments = payments.filter((payment) => ['pending', 'processing'].includes(payment.status));
   const riskItems = [
     ...pendingPayments.map((payment) => ({
@@ -101,7 +101,7 @@ export default function AdminDashboardPage() {
                 title: `${booking.id} / ${booking.customer}`,
                 detail: `${booking.itemCode} / ${booking.returnAt}`,
                 status: booking.status,
-                tone: booking.status === 'damage_review' ? 'danger' as const : 'warning' as const,
+                tone: booking.status === 'settlement_pending' ? 'danger' as const : 'warning' as const,
                 href: `/admin/returns?booking=${booking.id}`,
                 action: t('nav.returnDesk'),
               })),
@@ -122,7 +122,7 @@ export default function AdminDashboardPage() {
                 time: booking.returnAt.slice(11),
                 title: `${t('nav.returnDesk')} / ${booking.customer}`,
                 detail: `${booking.itemCode} / ${booking.product}`,
-                tone: booking.status === 'damage_review' ? 'danger' as const : 'warning' as const,
+                tone: booking.status === 'settlement_pending' ? 'danger' as const : 'warning' as const,
               })),
             ].sort((a, b) => a.time.localeCompare(b.time))}
           />

@@ -194,7 +194,7 @@ export function DisputeCaseWorkspace({ initialId }: { initialId?: string }) {
         '',
       );
       if (disputesRes.status === 'rejected' || auditRes.status === 'rejected') {
-        setError('API unavailable; showing dispute and audit sample data.');
+        setError(t('dispute.apiFallback'));
       }
     } finally {
       setLoading(false);

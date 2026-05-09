@@ -103,7 +103,7 @@ function apiFor(config: CrudModuleConfig) {
   switch (config.storageKey) {
     case 'rental-admin-leads':
       return {
-        list: async () => (await leadsApi.getAll()).data,
+        list: async () => (await leadsApi.getAll()).data ?? [],
         create: async (record: CrudRecord) =>
           (await leadsApi.create({
             email: record.email,
@@ -118,7 +118,7 @@ function apiFor(config: CrudModuleConfig) {
       };
     case 'rental-admin-appointments':
       return {
-        list: async () => (await appointmentsApi.getAll()).data,
+        list: async () => (await appointmentsApi.getAll()).data ?? [],
         create: async (record: CrudRecord) =>
           (await appointmentsApi.create({
             name: record.title,
@@ -135,32 +135,32 @@ function apiFor(config: CrudModuleConfig) {
       };
     case 'rental-admin-bookings':
       return {
-        list: async () => (await bookingsApi.getAll()).data,
+        list: async () => (await bookingsApi.getAll()).data ?? [],
         status: async (id: string, status: string) => (await bookingsApi.updateStatus(id, status.toUpperCase())).data,
         archive: async (id: string) => (await bookingsApi.archive(id)).data,
       };
     case 'rental-admin-payments':
       return {
-        list: async () => (await paymentsApi.getAll()).data,
+        list: async () => (await paymentsApi.getAll()).data ?? [],
         status: async (id: string, status: string) => (await paymentsApi.updateStatus(id, status.toUpperCase())).data,
         archive: async (id: string) => (await paymentsApi.archive(id)).data,
       };
     case 'rental-admin-receipts':
       return {
-        list: async () => (await receiptsApi.getAll()).data,
+        list: async () => (await receiptsApi.getAll()).data ?? [],
         update: async (record: CrudRecord) => (await receiptsApi.update(record.id, { type: String(record.type ?? 'rental_receipt').toUpperCase() })).data,
         status: async (id: string) => (await receiptsApi.print(id)).data,
         archive: async (id: string) => (await receiptsApi.archive(id)).data,
       };
     case 'rental-admin-inventory':
       return {
-        list: async () => (await inventoryApi.getItems()).data,
+        list: async () => (await inventoryApi.getItems()).data ?? [],
         status: async (id: string, status: string) => (await inventoryApi.updateItemStatus(id, status.toUpperCase())).data,
         archive: async (id: string) => (await inventoryApi.archiveItem(id)).data,
       };
     case 'rental-admin-preview-requests':
       return {
-        list: async () => (await previewRequestsApi.getAll()).data,
+        list: async () => (await previewRequestsApi.getAll()).data ?? [],
         create: async (record: CrudRecord) =>
           (await previewRequestsApi.create({
             name: record.title,
@@ -173,7 +173,7 @@ function apiFor(config: CrudModuleConfig) {
       };
     case 'rental-admin-users':
       return {
-        list: async () => (await usersApi.getAll()).data,
+        list: async () => (await usersApi.getAll()).data ?? [],
         create: async (record: CrudRecord) =>
           (await usersApi.create({
             email: record.email,
@@ -193,7 +193,7 @@ function apiFor(config: CrudModuleConfig) {
   }
 }
 
-function normalizeApiRows(config: CrudModuleConfig, apiRows: any[]): CrudRecord[] {
+function normalizeApiRows(config: CrudModuleConfig, apiRows: any[], labels?: { unassigned: string }): CrudRecord[] {
   switch (config.storageKey) {
     case 'rental-admin-leads':
       return apiRows.map((lead) => ({
@@ -204,7 +204,7 @@ function normalizeApiRows(config: CrudModuleConfig, apiRows: any[]): CrudRecord[
         phone: lead.customer?.phone,
         source: lead.source,
         request: lead.notes ?? 'Rental request',
-        owner: lead.assignedTo?.fullName ?? 'Unassigned',
+        owner: lead.assignedTo?.fullName ?? labels?.unassigned ?? '-',
         status: fromApiStatus(lead.status),
         notes: lead.notes,
         timeline: ['Lead loaded from backend'],
@@ -215,7 +215,7 @@ function normalizeApiRows(config: CrudModuleConfig, apiRows: any[]): CrudRecord[
         title: appointment.customer?.name ?? 'Appointment',
         subtitle: new Date(appointment.scheduledAt).toLocaleString(),
         type: fromApiStatus(appointment.type),
-        owner: appointment.staff?.fullName ?? 'Unassigned',
+        owner: appointment.staff?.fullName ?? labels?.unassigned ?? '-',
         date: appointment.scheduledAt?.slice(0, 10),
         time: appointment.scheduledAt?.slice(11, 16),
         room: appointment.room,
@@ -334,7 +334,7 @@ export function CrudPage({ config }: { config: CrudModuleConfig }) {
 
       try {
         const apiRows = await api.list();
-        if (mounted) setRows(normalizeApiRows(config, apiRows));
+        if (mounted) setRows(normalizeApiRows(config, apiRows, { unassigned: t('lead.unassigned') }));
       } catch {
         if (mounted) {
           setRows(getInitialRows(config));
@@ -398,7 +398,7 @@ export function CrudPage({ config }: { config: CrudModuleConfig }) {
             : !exists && api?.create
               ? await api.create(updatedRecord)
               : null;
-        const savedRecord = response ? normalizeApiRows(config, [response])[0] : updatedRecord;
+        const savedRecord = response ? normalizeApiRows(config, [response], { unassigned: t('lead.unassigned') })[0] : updatedRecord;
 
         setRows((current) =>
           exists
@@ -626,7 +626,7 @@ function DetailDrawer({
     return option.replace(/_/g, ' ');
   };
   return (
-    <div className="fixed inset-0 z-50 bg-[rgb(var(--overlay))]" onClick={onClose}>
+    <div className="fixed inset-0 z-50" style={{ backgroundColor: 'rgb(var(--overlay) / 0.52)' }} onClick={onClose}>
       <aside className="ml-auto flex h-full w-full max-w-xl flex-col bg-[rgb(var(--surface-2))] shadow-[var(--shadow-float)]" onClick={(event) => event.stopPropagation()}>
         <div className="border-b border-[rgb(var(--surface-border))] p-6">
           <div className="flex items-start justify-between gap-4">

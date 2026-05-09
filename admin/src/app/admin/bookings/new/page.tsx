@@ -2,8 +2,9 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
-import { bookingsApi, inventoryApi, leadsApi } from '@/lib/api';
+import { bookingsApi, leadsApi } from '@/lib/api';
 import { DataTable, InlineAlert, KeyValueList, PageHeader, RailSection, SectionCard, StatusBadge, WorkspaceLayout } from '@/components/admin/ui';
 import { AdminButton, AdminInput, AdminSelect, AdminSpinner } from '@/components/admin/primitives';
 import { useI18n } from '@/hooks/useI18n';
@@ -55,7 +56,9 @@ function securityDepositPolicy(basePrice: number) {
 export default function NewBookingPage() {
   const { t } = useI18n();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [initialLeadId, setInitialLeadId] = useState('');
+  const [initialCustomerId, setInitialCustomerId] = useState('');
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,7 +74,23 @@ export default function NewBookingPage() {
   const [durationDays, setDurationDays] = useState(3);
   const [accessories, setAccessories] = useState('veil, jewelry set');
 
+  const hasLeadContext = Boolean(initialLeadId);
+  const customerOptions = useMemo(() => {
+    const unique = new Map<string, { id: string; name: string; phone?: string; email?: string }>();
+    leads.forEach((lead) => {
+      const id = lead.customer?.id ?? lead.customerId;
+      if (!id || unique.has(id)) return;
+      unique.set(id, {
+        id,
+        name: lead.customer?.name ?? '-',
+        phone: lead.customer?.phone ?? undefined,
+        email: lead.customer?.email ?? undefined,
+      });
+    });
+    return [...unique.values()];
+  }, [leads]);
   const selectedLead = leads.find((lead) => lead.id === leadId);
+  const selectedCustomer = customerOptions.find((customer) => customer.id === customerId);
   const selectedItem = items.find((item) => item.id === inventoryItemId);
   const basePrice = Number(selectedItem?.product?.price ?? 0);
   const actualDays = useMemo(() => calendarDays(pickupDate, pickupTime, returnDate, returnTime), [pickupDate, pickupTime, returnDate, returnTime]);
@@ -83,26 +102,36 @@ export default function NewBookingPage() {
   const latePickupApplies = Number(pickupTime.split(':')[0] ?? 0) >= 20;
 
   useEffect(() => {
-    setInitialLeadId(new URLSearchParams(window.location.search).get('lead') ?? '');
-  }, []);
+    setInitialLeadId(searchParams.get('lead') ?? '');
+    setInitialCustomerId(searchParams.get('customerId') ?? '');
+  }, [searchParams]);
 
   useEffect(() => {
     const load = async () => {
       setLoading(true);
       setError(null);
       try {
-        const [leadsRes, itemsRes] = await Promise.all([
+        const [leadsRes, availabilityRes] = await Promise.all([
           leadsApi.getAll(),
-          inventoryApi.getItems('AVAILABLE'),
+          bookingsApi.getAvailability(
+            new Date(`${pickupDate}T${pickupTime}:00`).toISOString(),
+            new Date(`${returnDate}T${returnTime}:00`).toISOString(),
+          ),
         ]);
         const leadRows = leadsRes.data ?? [];
-        const itemRows = itemsRes.data ?? [];
+        const itemRows = availabilityRes.data ?? [];
         setLeads(leadRows);
         setItems(itemRows);
         const preferredLead = leadRows.find((lead: any) => lead.id === initialLeadId) ?? leadRows[0];
-        setLeadId(preferredLead?.id ?? '');
-        setCustomerId(preferredLead?.customer?.id ?? '');
-        setInventoryItemId(itemRows[0]?.id ?? '');
+        const uniqueCustomers = new Map<string, string>();
+        leadRows.forEach((lead: any) => {
+          const id = lead.customer?.id ?? lead.customerId;
+          if (!id || uniqueCustomers.has(id)) return;
+          uniqueCustomers.set(id, id);
+        });
+        setLeadId(initialLeadId ? (preferredLead?.id ?? '') : '');
+        setCustomerId(initialCustomerId || preferredLead?.customer?.id ?? [...uniqueCustomers.values()][0] ?? '');
+        setInventoryItemId((current) => itemRows.some((item: any) => item.id === current) ? current : (itemRows[0]?.id ?? ''));
       } catch (err: any) {
         setError(err?.response?.data?.message ?? t('booking.loadCreateDataFailed'));
       } finally {
@@ -110,21 +139,47 @@ export default function NewBookingPage() {
       }
     };
     void load();
-  }, [initialLeadId]);
+  }, [initialCustomerId, initialLeadId, t]);
+
+  useEffect(() => {
+    if (loading) return;
+    let cancelled = false;
+    const loadAvailability = async () => {
+      try {
+        const availabilityRes = await bookingsApi.getAvailability(
+          new Date(`${pickupDate}T${pickupTime}:00`).toISOString(),
+          new Date(`${returnDate}T${returnTime}:00`).toISOString(),
+        );
+        if (cancelled) return;
+        const itemRows = availabilityRes.data ?? [];
+        setItems(itemRows);
+        setInventoryItemId((current) => itemRows.some((item: any) => item.id === current) ? current : (itemRows[0]?.id ?? ''));
+      } catch (err: any) {
+        if (cancelled) return;
+        setItems([]);
+        setInventoryItemId('');
+        setError(err?.response?.data?.message ?? t('booking.loadCreateDataFailed'));
+      }
+    };
+    void loadAvailability();
+    return () => {
+      cancelled = true;
+    };
+  }, [loading, pickupDate, pickupTime, returnDate, returnTime, t]);
 
   const createBooking = async () => {
     setSubmitting(true);
     setError(null);
     try {
       if (!customerId || !inventoryItemId) {
-        throw new Error('Vui long chon khach hang va item.');
+        throw new Error('Vui lòng chọn khách hàng và sản phẩm trong kho.');
       }
       if (new Date(`${pickupDate}T${pickupTime}:00`).getTime() >= new Date(`${returnDate}T${returnTime}:00`).getTime()) {
-        throw new Error('Ngay tra phai sau ngay lay.');
+        throw new Error('Ngày trả phải sau ngày lấy.');
       }
 
       const created = await bookingsApi.create({
-        leadId: leadId || undefined,
+        leadId: hasLeadContext ? (leadId || undefined) : undefined,
         customerId,
         pickupDate: new Date(`${pickupDate}T${pickupTime}:00`).toISOString(),
         returnDate: new Date(`${returnDate}T${returnTime}:00`).toISOString(),
@@ -133,7 +188,7 @@ export default function NewBookingPage() {
         items: [{ inventoryItemId }],
       });
 
-      router.push(`/admin/payments/from-booking/${created.data.id}?deposit=${bookingDeposit}`);
+      router.push(`/admin/payments?booking=${created.data.id}&deposit=${bookingDeposit}`);
     } catch (err: any) {
       setError(err?.message ?? err?.response?.data?.message ?? t('booking.createFailed'));
     } finally {
@@ -187,21 +242,31 @@ export default function NewBookingPage() {
           <SectionCard title={t('booking.formTitle')} description={t('booking.formDesc')}>
             <div className="grid gap-4 md:grid-cols-2">
               <label className="grid gap-2 text-sm font-semibold">
-                {t('booking.leadCustomer')}
-                <AdminSelect
-                  value={leadId}
-                  onChange={(event) => {
-                    const nextLead = leads.find((lead) => lead.id === event.target.value);
-                    setLeadId(event.target.value);
-                    setCustomerId(nextLead?.customer?.id ?? '');
-                  }}
-                >
-                  {leads.map((lead) => (
-                    <option key={lead.id} value={lead.id}>
-                      {lead.customer?.name} - {lead.customer?.phone}
-                    </option>
-                  ))}
-                </AdminSelect>
+                {hasLeadContext ? t('booking.leadCustomer') : t('booking.customer')}
+                {hasLeadContext ? (
+                  <AdminSelect
+                    value={leadId}
+                    onChange={(event) => {
+                      const nextLead = leads.find((lead) => lead.id === event.target.value);
+                      setLeadId(event.target.value);
+                      setCustomerId(nextLead?.customer?.id ?? '');
+                    }}
+                  >
+                    {leads.map((lead) => (
+                      <option key={lead.id} value={lead.id}>
+                        {lead.customer?.name} - {lead.customer?.phone}
+                      </option>
+                    ))}
+                  </AdminSelect>
+                ) : (
+                  <AdminSelect value={customerId} onChange={(event) => setCustomerId(event.target.value)}>
+                    {customerOptions.map((customer) => (
+                      <option key={customer.id} value={customer.id}>
+                        {customer.name} - {customer.phone ?? customer.email ?? customer.id}
+                      </option>
+                    ))}
+                  </AdminSelect>
+                )}
               </label>
               <label className="grid gap-2 text-sm font-semibold">
                 {t('booking.productVariantItem')}
@@ -247,7 +312,7 @@ export default function NewBookingPage() {
           <SectionCard title={t('booking.previewBreakdown')} description={t('booking.previewBreakdownDesc')}>
             <KeyValueList
               items={[
-                { label: t('booking.customer'), value: selectedLead?.customer?.name ?? '-' },
+                { label: t('booking.customer'), value: selectedLead?.customer?.name ?? selectedCustomer?.name ?? '-' },
                 { label: t('booking.product'), value: selectedItem?.product?.name ?? '-' },
                 { label: t('booking.variant'), value: `${selectedItem?.variant?.size ?? 'standard'} / ${selectedItem?.variant?.color ?? '-'}` },
                 { label: t('booking.baseThreeDayPrice'), value: currency.format(basePrice) },
@@ -261,7 +326,7 @@ export default function NewBookingPage() {
 
           <SectionCard title={t('booking.availabilityTimeline')} description={t('booking.availabilityTimelineDesc')}>
             <DataTable
-              columns={[t('booking.item'), t('booking.product'), t('booking.variant'), t('return.condition'), t('booking.lockPolicy')]}
+              columns={[t('booking.item'), t('booking.product'), t('booking.variant'), t('return.conditionLabel'), t('booking.lockPolicy')]}
               rows={items.map((item) => [
                 item.serialNumber,
                 item.product?.name ?? '-',
